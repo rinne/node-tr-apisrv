@@ -36,6 +36,15 @@ var ApiSrv = function(opts) {
 		}
 		this.authCallback = function(r) { return true; }.bind(this);
 	}
+	if ((opts.upgradeCallback !== undefined) && (opts.upgradeCallback !== null)) {
+		if (typeof(opts.upgradeCallback) === 'function') {
+			this.upgradeCallback = opts.upgradeCallback;
+		} else {
+			throw new Error('Bad upgradeCallback for ApiSrv constructor');
+		}
+	} else {
+		this.upgradeCallback = undefined
+	}
 	if ((opts.bodyReadTimeoutMs !== undefined) && (opts.bodyReadTimeoutMs !== null)) {
 		if (Number.isSafeInteger(opts.bodyReadTimeoutMs) && (opts.bodyReadTimeoutMs > 0)) {
 			this.bodyReadTimeoutMs = opts.bodyReadTimeoutMs;
@@ -45,6 +54,51 @@ var ApiSrv = function(opts) {
 	} else {
 		this.bodyReadTimeoutMs = 2 * 1000;
 	}
+	var upgradeCb = function(req, s, head) {
+		var m, r = {};
+		r.method = req.method;
+		if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
+			r.url = m[1];
+			if (! (r.params = qs.parse(m[2].toString('utf8')))) {
+				s.end();
+				return;
+			}
+		} else {
+			r.url = req.url;
+			r.params = {};
+		}
+		r.headers = req.headers;
+		r.req = req;
+		return (Promise.resolve(this.authCallback(r))
+				.then(function(ret) {
+					if (ret) {
+						r.head = head;
+						r.s = s;
+						return opts.upgradeCallback(r);
+					} else {
+						s.destroy();
+						s = undefined;
+					}
+				}.bind(this))
+				.then(function(ret) {
+					if (ret !== false) {
+						if (this.debug) {
+							console.log('Upgrade successfully processed (resource :' + r.url + ').');
+						}
+					}
+				}.bind(this))
+				.catch(function(e) {
+					if (s) {
+						try {
+							s.destroy();
+							s = undefined;
+						} catch(ignored) {
+							s = undefined;
+						}
+						return false;
+					}
+				}.bind(this)));
+	}.bind(this);
 	var requestCb = function(req, res) {
 		var completed = false, body = Buffer.alloc(0), r = {}, timeout;
 		var contentType, contentTypeArgs;
@@ -221,6 +275,9 @@ var ApiSrv = function(opts) {
 		res.end();
 	}.bind(this);
 	this.server = http.createServer(requestCb);
+	if (this.upgradeCallback) {
+		this.server.on('upgrade', upgradeCb);
+	}
 	this.server.on('error', function(e) {
 		console.log('Unable to start HTTP server');
 		process.exit(1);
