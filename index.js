@@ -1,11 +1,23 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const qs = require('querystring')
 
 var ApiSrv = function(opts) {
+	var proto = http;
+	var srvOpts = {};
 	if (! (opts && (typeof(opts) === 'object'))) {
 		throw new Error('Bad opts for ApiSrv constructor');
+	}
+	if (opts.key && opts.cert) {
+		srvOpts.key = opts.key;
+		srvOpts.cert = opts.cert;
+		proto = https;
+	} else if (opts.key) {
+		throw new Error('Key defined without cert');
+	} else if (opts.cert) {
+		throw new Error('Cert defined without key');
 	}
 	this.debug = opts.debug ? true : false;
 	this.prettyPrintJsonResponses = opts.prettyPrintJsonResponses ? true : false;
@@ -54,6 +66,7 @@ var ApiSrv = function(opts) {
 	} else {
 		this.bodyReadTimeoutMs = 2 * 1000;
 	}
+	srvOpts.requestTimeout = this.bodyReadTimeoutMs;
 	var upgradeCb = function(req, s, head) {
 		var m, r = {};
 		r.method = req.method;
@@ -274,7 +287,7 @@ var ApiSrv = function(opts) {
 		}
 		res.end();
 	}.bind(this);
-	this.server = http.createServer(requestCb);
+	this.server = proto.createServer(srvOpts, requestCb);
 	if (this.upgradeCallback) {
 		this.server.on('upgrade', upgradeCb);
 	}
