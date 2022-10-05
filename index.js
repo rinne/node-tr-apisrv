@@ -66,7 +66,9 @@ var ApiSrv = function(opts) {
 	} else {
 		this.bodyReadTimeoutMs = 2 * 1000;
 	}
-	srvOpts.requestTimeout = this.bodyReadTimeoutMs;
+	srvOpts.headersTimeout = this.bodyReadTimeoutMs;
+	srvOpts.requestTimeout = this.bodyReadTimeoutMs + 1;
+
 	var upgradeCb = function(req, s, head) {
 		var m, r = {};
 		r.method = req.method;

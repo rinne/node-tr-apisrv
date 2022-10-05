@@ -1,6 +1,6 @@
 {
     "name": "tr-apisrv",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "A simple asynchronous API server class",
     "main": "index.js",
     "scripts": {
