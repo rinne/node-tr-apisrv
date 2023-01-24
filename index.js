@@ -144,8 +144,9 @@ var ApiSrv = function(opts) {
 			}
 			switch (req.method) {
 			case 'POST':
+			case 'PUT':
 				if (req.url.match(/\?/)) {
-					error(res, 400, 'URL for POST must not contain query parameters.');
+					error(res, 400, 'URL for POST or PUT must not contain query parameters.');
 					return;
 				}
 				r.url = req.url;
@@ -177,7 +178,7 @@ var ApiSrv = function(opts) {
 					// RFC6749 anyways says that application/x-www-form-urlencoded
 					// is the "correct" way to go.
 				default:
-					error(res, 400, 'POST body must be in JSON or www-form-urlencoded format.');
+					error(res, 400, 'POST or PUT body must be in JSON or www-form-urlencoded format.');
 					return;
 				}
 				break;
@@ -201,7 +202,7 @@ var ApiSrv = function(opts) {
 				r.method = req.method;
 				break;
 			default:
-				error(res, 405, 'Only GET, POST, and DELETE are allowed.');
+				error(res, 405, 'Only GET, POST, PUT, and DELETE are allowed.');
 				return;
 			}
 			r.headers = req.headers;

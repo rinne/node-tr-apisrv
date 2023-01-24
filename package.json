@@ -1,13 +1,13 @@
 {
     "name": "tr-apisrv",
-    "version": "0.1.2",
+    "version": "0.1.4",
     "description": "A simple asynchronous API server class",
     "main": "index.js",
     "scripts": {
         "test": "node ./test/test.js"
     },
     "engines": {
-        "node": ">=10.00.0"
+        "node": ">= 10.00.0"
     },
     "dependencies": {
     },
