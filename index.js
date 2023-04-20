@@ -207,8 +207,15 @@ var ApiSrv = function(opts) {
 			}
 			r.headers = req.headers;
 			r.res = res;
-			r.jsonResponse = function(data, code) {
-				res.writeHead(code ? code : 200, { 'Content-Type': 'application/json; charset=utf-8' });
+			r.jsonResponse = function(data, code, excludeNoCacheHeaders) {
+				var headers = { 'Content-Type': 'application/json; charset=utf-8' };
+				if (! excludeNoCacheHeaders) {
+					headers = Object.assign(headers,
+											{ 'Cache-Control': 'no-store, no-cache, must-revalidate, post-check=0, pre-check=0',
+											  'Expires': 'Wed, 01 Jan 2020 12:00:00 GMT',
+											  'Pragma': 'no-cache' });
+				}
+				res.writeHead(code ? code : 200, headers);
 				if (this.prettyPrintJsonResponses) {
 					res.write(JSON.stringify(data, null, 2));
 					res.write("\n");
