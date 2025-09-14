@@ -16,14 +16,8 @@ srv.server.on('listening', function () {
     try {
         assert.strictEqual(srv.server.headersTimeout, timeout);
         assert.strictEqual(srv.server.requestTimeout, timeout + 1);
-    } catch (e) {
-        console.error(e);
-        return srv.server.close(function () {
-            process.exit(1);
-        });
+    } finally {
+        srv.server.close();
     }
-    srv.server.close(function () {
-        process.exit(0);
-    });
 });
 
