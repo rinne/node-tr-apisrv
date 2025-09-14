@@ -24,8 +24,6 @@ async function authCb(r) {
 }
 
 async function cb(r) {
-    var res = r.res;
-    delete r.res;
     r.jsonResponse(r, 200);
 }
 ```
