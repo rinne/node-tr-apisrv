@@ -358,4 +358,7 @@ ApiSrv.prototype.close = function() {
         });
 };
 
+// Backward compatible shutdown helper
+ApiSrv.prototype.shutdown = ApiSrv.prototype.close;
+
 module.exports = ApiSrv;

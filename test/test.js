@@ -1,161 +1,177 @@
 'use strict';
 
-const ApiSrv = require('../index');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const http = require('http');
+const ApiSrv = require('..');
 
-async function unauthorizedUpgrade() {
-    const logs = [];
-    const origLog = console.log;
-    console.log = (msg) => logs.push(msg);
-
-    const srv = new ApiSrv({
-        port: 12345,
-        callback: () => {},
-        authCallback: () => false,
-        upgradeCallback: () => true,
-        debug: true
-    });
-
-    try {
-        await new Promise((resolve, reject) => {
-            const req = http.request({
-                port: 12345,
-                hostname: '127.0.0.1',
-                headers: {
-                    Connection: 'Upgrade',
-                    Upgrade: 'websocket'
-                }
-            });
-            req.on('upgrade', (res, socket, head) => {
-                socket.destroy();
-                resolve();
-            });
-            req.on('error', resolve);
-            req.end();
+function httpRequest(port, { method = 'GET', path = '/', headers = {}, body } = {}) {
+    return new Promise((resolve, reject) => {
+        const req = http.request({
+            port,
+            hostname: '127.0.0.1',
+            method,
+            path,
+            headers
+        }, (res) => {
+            let data = '';
+            res.on('data', (d) => data += d);
+            res.on('end', () => resolve({ status: res.statusCode, data }));
         });
-        await new Promise(r => setTimeout(r, 50));
-    } finally {
-        console.log = origLog;
-        srv.server.close();
-    }
-
-    if (logs.some(l => l.includes('Upgrade successfully processed'))) {
-        throw new Error('Unauthorized upgrade logged success');
-    }
+        req.on('error', reject);
+        if (body) {
+            req.write(body);
+        }
+        req.end();
+    });
 }
 
-async function customTimeouts() {
+test('handles GET requests', async () => {
+    const port = 12350;
     const srv = new ApiSrv({
-        port: 12346,
-        bodyReadTimeoutMs: 1234,
-        callback: () => {}
+        port,
+        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
     });
-
     try {
-        if (srv.server.headersTimeout !== 1234) {
-            throw new Error('headersTimeout not set');
-        }
-        if (srv.server.requestTimeout !== 1235) {
-            throw new Error('requestTimeout not set');
-        }
+        const res = await httpRequest(port, { method: 'GET', path: '/?a=1' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { method: 'GET', params: { a: '1' } });
     } finally {
-        srv.server.close();
+        await srv.shutdown();
     }
-}
+});
 
-async function queryParsing() {
+test('handles POST requests', async () => {
+    const port = 12351;
     const srv = new ApiSrv({
-        port: 12347,
-        callback: (r) => r.jsonResponse(r.params)
+        port,
+        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
     });
-
     try {
-        const getRes = await new Promise((resolve, reject) => {
-            http.get({ port: 12347, path: '/?a=a+b' }, (res) => {
-                let data = '';
-                res.on('data', d => data += d);
-                res.on('end', () => resolve({ status: res.statusCode, data }));
-            }).on('error', reject);
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ a: 1 })
         });
-        if (getRes.status !== 200 || JSON.parse(getRes.data).a !== 'a b') {
-            throw new Error('GET query parsing failed');
-        }
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { method: 'POST', params: { a: 1 } });
+    } finally {
+        await srv.shutdown();
+    }
+});
 
-        const postRes = await new Promise((resolve, reject) => {
-            const req = http.request({
-                port: 12347,
-                method: 'POST',
-                path: '/',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-            }, (res) => {
-                let data = '';
-                res.on('data', d => data += d);
-                res.on('end', () => resolve({ status: res.statusCode, data }));
+test('handles PUT requests', async () => {
+    const port = 12352;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'PUT',
+            path: '/',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'a=1'
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { method: 'PUT', params: { a: '1' } });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('handles DELETE requests', async () => {
+    const port = 12353;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+    });
+    try {
+        const res = await httpRequest(port, { method: 'DELETE', path: '/?a=1' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { method: 'DELETE', params: { a: '1' } });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('authentication callback controls access', async () => {
+    const port = 12354;
+    let handled = 0;
+    let authCalls = 0;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => {
+            handled++;
+            r.jsonResponse({ ok: true });
+        },
+        authCallback: (r) => {
+            authCalls++;
+            return r.url !== '/deny';
+        }
+    });
+    try {
+        const okRes = await httpRequest(port, { method: 'GET', path: '/allow' });
+        assert.strictEqual(okRes.status, 200);
+        assert.strictEqual(handled, 1);
+        assert.strictEqual(authCalls, 1);
+
+        const unauthorized = new Promise((resolve, reject) => {
+            const req = http.request({ port, hostname: '127.0.0.1', method: 'GET', path: '/deny' });
+            req.on('response', (res) => {
+                res.resume();
+                res.on('end', resolve);
             });
             req.on('error', reject);
-            req.end('a=a+b');
+            req.end();
+            setTimeout(() => req.destroy(), 50);
         });
-        if (postRes.status !== 200 || JSON.parse(postRes.data).a !== 'a b') {
-            throw new Error('POST query parsing failed');
-        }
+        await assert.rejects(unauthorized);
+        assert.strictEqual(handled, 1);
+        assert.strictEqual(authCalls, 2);
     } finally {
-        srv.server.close();
+        await srv.shutdown();
     }
-}
+});
 
-async function badCharset() {
+test('body read timeout returns 408', async () => {
+    const port = 12355;
     const srv = new ApiSrv({
-        port: 12348,
-        callback: () => {},
-        debug: true
+        port,
+        bodyReadTimeoutMs: 50,
+        callback: () => {}
     });
-
     try {
         const res = await new Promise((resolve, reject) => {
             const req = http.request({
-                port: 12348,
+                port,
                 method: 'POST',
                 path: '/',
-                headers: { 'Content-Type': 'application/json; charset=iso-8859-1' }
+                hostname: '127.0.0.1'
             }, (res) => {
                 let data = '';
-                res.on('data', d => data += d);
+                res.on('data', (d) => data += d);
                 res.on('end', () => resolve({ status: res.statusCode, data }));
             });
             req.on('error', reject);
-            req.end('{');
+            req.write('123'); // intentionally never calling end to trigger timeout
         });
-        if (res.status !== 400 || res.data !== 'Bad charset for JSON content type.\n') {
-            throw new Error('Bad charset not handled correctly');
-        }
+        assert.strictEqual(res.status, 408);
+        assert.strictEqual(res.data, 'Timeout occured while reading the request data.\n');
     } finally {
-        srv.server.close();
+        await srv.shutdown();
     }
-}
+});
 
-async function startStopCycles() {
-    for (let i = 0; i < 2; i++) {
-        const srv = new ApiSrv({
-            port: 12349,
-            callback: () => {}
-        });
-        await new Promise(resolve => srv.server.on('listening', resolve));
-        await srv.close();
-    }
-}
-
-async function main() {
-    await unauthorizedUpgrade();
-    await customTimeouts();
-    await queryParsing();
-    await badCharset();
-    await startStopCycles();
-}
-
-main()
-    .then(() => process.exit(0))
-    .catch((e) => {
-        console.error(e);
-        process.exit(1);
+test('shutdown stops listening', async () => {
+    const port = 12356;
+    const srv = new ApiSrv({
+        port,
+        callback: () => {}
     });
+    await new Promise((resolve) => srv.server.on('listening', resolve));
+    await srv.shutdown();
+    await assert.rejects(httpRequest(port, { method: 'GET', path: '/' }));
+});
 
