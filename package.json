@@ -4,7 +4,7 @@
     "description": "A simple asynchronous API server class",
     "main": "index.js",
     "scripts": {
-        "test": "node ./test/test.js"
+        "test": "node --test test/test.js"
     },
     "engines": {
         "node": ">=18.0.0"
