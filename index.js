@@ -97,9 +97,9 @@ var ApiSrv = function(opts) {
 	srvOpts.headersTimeout = this.bodyReadTimeoutMs;
 	srvOpts.requestTimeout = this.bodyReadTimeoutMs + 1;
 
-	var upgradeCb = function(req, s, head) {
-		var m, r = {};
-		r.method = req.method;
+        var upgradeCb = async function(req, s, head) {
+                var m, r = {};
+                r.method = req.method;
                 if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
                         r.url = m[1];
                         r.params = parseQuery(m[2].toString('utf8'));
@@ -107,40 +107,35 @@ var ApiSrv = function(opts) {
                         r.url = req.url;
                         r.params = {};
                 }
-		r.headers = req.headers;
-		r.req = req;
-		return (Promise.resolve(this.authCallback(r))
-				.then(function(ret) {
-                                        if (ret) {
-                                                r.head = head;
-                                                r.s = s;
-                                                return opts.upgradeCallback(r);
-                                        } else {
-                                                s.destroy();
-                                                s = undefined;
-                                               return false;
-                                       }
-                               }.bind(this))
-                               .then(function(ret) {
-                                       if (ret) {
-                                               if (this.debug) {
-                                                       console.log('Upgrade successfully processed (resource :' + r.url + ').');
-                                               }
-                                       }
-                                       return ret;
-                               }.bind(this))
-                               .catch(function(e) {
-					if (s) {
-						try {
-							s.destroy();
-							s = undefined;
-						} catch(ignored) {
-							s = undefined;
-						}
-						return false;
-					}
-				}.bind(this)));
-	}.bind(this);
+                r.headers = req.headers;
+                r.req = req;
+                try {
+                        const ret = await this.authCallback(r);
+                        if (ret) {
+                                r.head = head;
+                                r.s = s;
+                                const cbRet = await opts.upgradeCallback(r);
+                                if (cbRet && this.debug) {
+                                        console.log('Upgrade successfully processed (resource :' + r.url + ').');
+                                }
+                                return cbRet;
+                        } else {
+                                s.destroy();
+                                s = undefined;
+                                return false;
+                        }
+                } catch (e) {
+                        if (s) {
+                                try {
+                                        s.destroy();
+                                        s = undefined;
+                                } catch(ignored) {
+                                        s = undefined;
+                                }
+                        }
+                        return false;
+                }
+        }.bind(this);
 	var requestCb = function(req, res) {
 		var completed = false, body = Buffer.alloc(0), r = {}, timeout, bodySize = 0;
 		var contentType, contentTypeArgs;
@@ -164,7 +159,7 @@ var ApiSrv = function(opts) {
 			}
 			body = Buffer.concat( [ body, data ] );
 		}.bind(this);
-		var endCb = function() {
+                var endCb = async function() {
 			if (completed) {
 				return;
 			}
@@ -259,33 +254,27 @@ var ApiSrv = function(opts) {
 					res.write(JSON.stringify(data));
 				}
 				res.end();
-			}.bind(this);
-			return (Promise.resolve(this.authCallback(r))
-					.then(function(ret) {
-						if (ret) {
-							return this.callback(r);
-						} else if (this.debug) {
-							console.log('Authentication failed (resource :' + r.url + ').');
-						}
-						return false;
-					}.bind(this))
-					.then(function(ret) {
-						if (ret !== false) {
-							if (this.debug) {
-								console.log('Request successfully processed (resource :' + r.url + ').');
-							}
-						}
-					}.bind(this))
-					.catch(function(e) {
-						if (this.debug) {
-							console.log(e);
-						}
-						try {
-							error(res, 500, 'Request handler fails to execute.');
-						} catch(e) {
-						}
-					}.bind(this)));
-		}.bind(this);
+                        }.bind(this);
+                        try {
+                                const auth = await this.authCallback(r);
+                                if (auth) {
+                                        const ret = await this.callback(r);
+                                        if (ret !== false && this.debug) {
+                                                console.log('Request successfully processed (resource :' + r.url + ').');
+                                        }
+                                } else if (this.debug) {
+                                        console.log('Authentication failed (resource :' + r.url + ').');
+                                }
+                        } catch (e) {
+                                if (this.debug) {
+                                        console.log(e);
+                                }
+                                try {
+                                        error(res, 500, 'Request handler fails to execute.');
+                                } catch(e) {
+                                }
+                        }
+                }.bind(this);
 		var errorCb = function() {
 			if (completed) {
 				return;
