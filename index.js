@@ -326,12 +326,13 @@ var ApiSrv = function(opts) {
 	if (this.upgradeCallback) {
 		this.server.on('upgrade', upgradeCb);
 	}
-	this.server.on('error', function(e) {
-		console.log('Unable to start HTTP server');
-		process.exit(1);
-	});
-	this.server.headersTimeout = 2000;
-	this.server.listen(this.port, this.address);
+        this.server.on('error', function(e) {
+                console.log('Unable to start HTTP server');
+                process.exit(1);
+        });
+        this.server.headersTimeout = this.bodyReadTimeoutMs;
+        this.server.requestTimeout = this.bodyReadTimeoutMs + 1;
+        this.server.listen(this.port, this.address);
 };
 
 module.exports = ApiSrv;

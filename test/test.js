@@ -44,7 +44,31 @@ async function unauthorizedUpgrade() {
     }
 }
 
-unauthorizedUpgrade()
+async function customTimeouts() {
+    const srv = new ApiSrv({
+        port: 12346,
+        bodyReadTimeoutMs: 1234,
+        callback: () => {}
+    });
+
+    try {
+        if (srv.server.headersTimeout !== 1234) {
+            throw new Error('headersTimeout not set');
+        }
+        if (srv.server.requestTimeout !== 1235) {
+            throw new Error('requestTimeout not set');
+        }
+    } finally {
+        srv.server.close();
+    }
+}
+
+async function main() {
+    await unauthorizedUpgrade();
+    await customTimeouts();
+}
+
+main()
     .then(() => process.exit(0))
     .catch((e) => {
         console.error(e);
