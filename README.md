@@ -14,6 +14,7 @@ var srv = new ApiSrv({ port: 8808,
                        authCallback: authCb,
                        prettyPrintJsonResponses: true,
                        bodyReadTimeoutMs: 5000,
+                       maxBodySize: 1024 * 1024,
                        debug: true });
 
 async function authCb(r) {
@@ -26,6 +27,9 @@ async function cb(r) {
     r.jsonResponse(r, 200);
 }
 ```
+
+`maxBodySize` limits the size of accepted request bodies in bytes. Requests exceeding
+the limit are terminated with HTTP status 413. The default limit is 1 MiB.
 
 Author
 ======
