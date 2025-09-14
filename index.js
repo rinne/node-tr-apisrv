@@ -66,6 +66,15 @@ var ApiSrv = function(opts) {
 	} else {
 		this.bodyReadTimeoutMs = 2 * 1000;
 	}
+	if ((opts.maxBodySize !== undefined) && (opts.maxBodySize !== null)) {
+		if (Number.isSafeInteger(opts.maxBodySize) && (opts.maxBodySize >= 0)) {
+			this.maxBodySize = opts.maxBodySize;
+		} else {
+			throw new Error('Bad maxBodySize for ApiSrv constructor');
+		}
+	} else {
+		this.maxBodySize = 1024 * 1024;
+	}
 	srvOpts.headersTimeout = this.bodyReadTimeoutMs;
 	srvOpts.requestTimeout = this.bodyReadTimeoutMs + 1;
 
@@ -117,10 +126,24 @@ var ApiSrv = function(opts) {
 				}.bind(this)));
 	}.bind(this);
 	var requestCb = function(req, res) {
-		var completed = false, body = Buffer.alloc(0), r = {}, timeout;
+		var completed = false, body = Buffer.alloc(0), r = {}, timeout, bodySize = 0;
 		var contentType, contentTypeArgs;
 		var dataCb = function(data) {
 			if (completed) {
+				return;
+			}
+			bodySize += data.length;
+			if (this.maxBodySize && (bodySize > this.maxBodySize)) {
+				completed = true;
+				if (timeout) {
+					clearTimeout(timeout);
+					timeout = undefined;
+				}
+				error(res, 413, 'Request body too large.');
+				try {
+					req.destroy();
+				} catch (ignored) {
+				}
 				return;
 			}
 			body = Buffer.concat( [ body, data ] );
