@@ -103,10 +103,41 @@ async function queryParsing() {
     }
 }
 
+async function badCharset() {
+    const srv = new ApiSrv({
+        port: 12348,
+        callback: () => {},
+        debug: true
+    });
+
+    try {
+        const res = await new Promise((resolve, reject) => {
+            const req = http.request({
+                port: 12348,
+                method: 'POST',
+                path: '/',
+                headers: { 'Content-Type': 'application/json; charset=iso-8859-1' }
+            }, (res) => {
+                let data = '';
+                res.on('data', d => data += d);
+                res.on('end', () => resolve({ status: res.statusCode, data }));
+            });
+            req.on('error', reject);
+            req.end('{');
+        });
+        if (res.status !== 400 || res.data !== 'Bad charset for JSON content type.\n') {
+            throw new Error('Bad charset not handled correctly');
+        }
+    } finally {
+        srv.server.close();
+    }
+}
+
 async function main() {
     await unauthorizedUpgrade();
     await customTimeouts();
     await queryParsing();
+    await badCharset();
 }
 
 main()

@@ -197,10 +197,11 @@ var ApiSrv = function(opts) {
                                 case 'application/www-form-urlencoded':
                                         r.params = parseQuery(body.toString('utf8'));
                                         break;
-				case 'application/json':
-					if (contentTypeArgs && (contentTypeArgs.toLowerCase() !== 'charset=utf-8')) {
-						error(res, 400, 'Bad charset for JSON content type.');
-					}
+                                case 'application/json':
+                                        if (contentTypeArgs && (contentTypeArgs.toLowerCase() !== 'charset=utf-8')) {
+                                                error(res, 400, 'Bad charset for JSON content type.');
+                                                return;
+                                        }
 					try {
 						r.params = JSON.parse(body.toString('utf8'));
 					} catch(e) {
