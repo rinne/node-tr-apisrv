@@ -1,3 +1,29 @@
 'use strict';
-const x = require('../index');
-process.exit(0);
+
+const assert = require('assert');
+const ApiSrv = require('../index');
+
+const timeout = 2500;
+
+const srv = new ApiSrv({
+    port: 8000,
+    address: '127.0.0.1',
+    bodyReadTimeoutMs: timeout,
+    callback: function () {}
+});
+
+srv.server.on('listening', function () {
+    try {
+        assert.strictEqual(srv.server.headersTimeout, timeout);
+        assert.strictEqual(srv.server.requestTimeout, timeout + 1);
+    } catch (e) {
+        console.error(e);
+        return srv.server.close(function () {
+            process.exit(1);
+        });
+    }
+    srv.server.close(function () {
+        process.exit(0);
+    });
+});
+

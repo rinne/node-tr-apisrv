@@ -305,7 +305,8 @@ var ApiSrv = function(opts) {
 		console.log('Unable to start HTTP server');
 		process.exit(1);
 	});
-	this.server.headersTimeout = 2000;
+	this.server.headersTimeout = this.bodyReadTimeoutMs;
+	this.server.requestTimeout = this.bodyReadTimeoutMs + 1;
 	this.server.listen(this.port, this.address);
 };
 
