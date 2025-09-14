@@ -23,6 +23,27 @@ function parseQuery(str) {
     return params;
 }
 
+function parseContentType(str) {
+    const parts = str.split(';').map(p => p.trim()).filter(p => p !== '');
+    if (parts.length === 0) {
+        return null;
+    }
+    const type = parts.shift().toLowerCase();
+    const params = Object.create(null);
+    for (const part of parts) {
+        const m = part.match(/^([!#$%&'*+.^_`|~0-9A-Za-z-]+)=((?:"(?:[^"\\]|\\.)*"|[^\s;]+))$/);
+        if (!m) {
+            return null;
+        }
+        let val = m[2];
+        if (val.startsWith('"')) {
+            val = val.slice(1, -1);
+        }
+        params[m[1].toLowerCase()] = val.toLowerCase();
+    }
+    return { type, params };
+}
+
 var ApiSrv = function(opts) {
     var proto = http;
     var srvOpts = {};
@@ -139,11 +160,45 @@ var ApiSrv = function(opts) {
     var requestCb = function(req, res) {
         var completed = false, body = Buffer.alloc(0), r = {}, timeout, bodySize = 0;
         var contentType, contentTypeArgs;
+        var declaredContentLength;
+        if (req.headers['transfer-encoding'] && req.headers['content-length']) {
+            error(res, 400, 'Both Transfer-Encoding and Content-Length defined.');
+            return;
+        }
+        if (req.headers['content-length']) {
+            var cl = parseInt(req.headers['content-length'], 10);
+            if (!Number.isSafeInteger(cl) || cl < 0) {
+                error(res, 400, 'Bad Content-Length header.');
+                return;
+            }
+            declaredContentLength = cl;
+            if (this.maxBodySize && (cl > this.maxBodySize)) {
+                error(res, 413, 'Request body too large.');
+                try {
+                    req.destroy();
+                } catch (ignored) {
+                }
+                return;
+            }
+        }
         var dataCb = function(data) {
             if (completed) {
                 return;
             }
             bodySize += data.length;
+            if (declaredContentLength !== undefined && (bodySize > declaredContentLength)) {
+                completed = true;
+                if (timeout) {
+                    clearTimeout(timeout);
+                    timeout = undefined;
+                }
+                error(res, 400, 'Request body longer than Content-Length.');
+                try {
+                    req.destroy();
+                } catch (ignored) {
+                }
+                return;
+            }
             if (this.maxBodySize && (bodySize > this.maxBodySize)) {
                 completed = true;
                 if (timeout) {
@@ -168,11 +223,15 @@ var ApiSrv = function(opts) {
                 clearTimeout(timeout);
                 timeout = undefined;
             }
+            if (declaredContentLength !== undefined && (body.length !== declaredContentLength)) {
+                error(res, 400, 'Request body length does not match Content-Length.');
+                return;
+            }
             if (req.headers['content-type']) {
-                let m = req.headers['content-type'].match(/^\s*([^\s;]+)\s*(|;\s*(|.*[^\s]))\s*$/);
-                if (m) {
-                    contentType = m[1];
-                    contentTypeArgs = (m[3] && m[3] !== '') ? m[3] : undefined;
+                let ct = parseContentType(req.headers['content-type']);
+                if (ct) {
+                    contentType = ct.type;
+                    contentTypeArgs = ct.params;
                 } else {
                     error(res, 400, 'Unable to parse content-type.');
                     return;
@@ -193,7 +252,7 @@ var ApiSrv = function(opts) {
                     r.params = parseQuery(body.toString('utf8'));
                     break;
                 case 'application/json':
-                    if (contentTypeArgs && (contentTypeArgs.toLowerCase() !== 'charset=utf-8')) {
+                    if (contentTypeArgs && contentTypeArgs.charset && (contentTypeArgs.charset !== 'utf-8')) {
                         error(res, 400, 'Bad charset for JSON content type.');
                         return;
                     }
