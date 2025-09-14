@@ -47,8 +47,8 @@ function parseContentType(str) {
 var ApiSrv = function(opts) {
     var proto = http;
     var srvOpts = {};
-    if (! (opts && (typeof(opts) === 'object'))) {
-        throw new Error('Bad opts for ApiSrv constructor');
+    if (!(opts && (typeof(opts) === 'object'))) {
+        throw new Error(`Bad opts for ApiSrv constructor: ${opts}`);
     }
     if (opts.key && opts.cert) {
         srvOpts.key = opts.key;
@@ -64,23 +64,23 @@ var ApiSrv = function(opts) {
     if (Number.isSafeInteger(opts.port) && (opts.port > 0) && (opts.port < 65536)) {
         this.port = opts.port;
     } else {
-        throw new Error('Bad port for ApiSrv constructor');
+        throw new Error(`Bad port for ApiSrv constructor: ${opts.port}`);
     }
     if (typeof(opts.address) === 'string') {
         this.address = opts.address;
     } else if (opts.address) {
-        throw new Error('Bad address for ApiSrv constructor');
+        throw new Error(`Bad address for ApiSrv constructor: ${opts.address}`);
     }
     if (typeof(opts.callback) === 'function') {
         this.callback = opts.callback;
     } else {
-        throw new Error('Bad callback for ApiSrv constructor');
+        throw new Error(`Bad callback for ApiSrv constructor: ${opts.callback}`);
     }
     if ((opts.authCallback !== undefined) && (opts.authCallback !== null)) {
         if (typeof(opts.authCallback) === 'function') {
             this.authCallback = opts.authCallback;
         } else {
-            throw new Error('Bad authCallback for ApiSrv constructor');
+            throw new Error(`Bad authCallback for ApiSrv constructor: ${opts.authCallback}`);
         }
     } else {
         if (this.debug) {
@@ -92,7 +92,7 @@ var ApiSrv = function(opts) {
         if (typeof(opts.upgradeCallback) === 'function') {
             this.upgradeCallback = opts.upgradeCallback;
         } else {
-            throw new Error('Bad upgradeCallback for ApiSrv constructor');
+            throw new Error(`Bad upgradeCallback for ApiSrv constructor: ${opts.upgradeCallback}`);
         }
     } else {
         this.upgradeCallback = undefined
@@ -101,7 +101,7 @@ var ApiSrv = function(opts) {
         if (Number.isSafeInteger(opts.bodyReadTimeoutMs) && (opts.bodyReadTimeoutMs > 0)) {
             this.bodyReadTimeoutMs = opts.bodyReadTimeoutMs;
         } else {
-            throw new Error('Bad bodyReadTimeoutMs for ApiSrv constructor');
+            throw new Error(`Bad bodyReadTimeoutMs for ApiSrv constructor: ${opts.bodyReadTimeoutMs}`);
         }
     } else {
         this.bodyReadTimeoutMs = 2 * 1000;
@@ -110,7 +110,7 @@ var ApiSrv = function(opts) {
         if (Number.isSafeInteger(opts.maxBodySize) && (opts.maxBodySize >= 0)) {
             this.maxBodySize = opts.maxBodySize;
         } else {
-            throw new Error('Bad maxBodySize for ApiSrv constructor');
+            throw new Error(`Bad maxBodySize for ApiSrv constructor: ${opts.maxBodySize}`);
         }
     } else {
         this.maxBodySize = 1024 * 1024;
@@ -385,8 +385,12 @@ var ApiSrv = function(opts) {
     if (this.upgradeCallback) {
         this.server.on('upgrade', upgradeCb);
     }
-    this.server.on('error', function(e) {
-        console.log('Unable to start HTTP server');
+    this.server.on('error', (e) => {
+        const addr = (this.address !== undefined) ? ` address: ${this.address}` : '';
+        console.log(`Unable to start HTTP server (port: ${this.port}${addr})`);
+        if (this.debug && e) {
+            console.log(e);
+        }
         process.exit(1);
     });
     this.server.headersTimeout = this.bodyReadTimeoutMs;
