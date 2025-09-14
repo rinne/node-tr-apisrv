@@ -133,11 +133,23 @@ async function badCharset() {
     }
 }
 
+async function startStopCycles() {
+    for (let i = 0; i < 2; i++) {
+        const srv = new ApiSrv({
+            port: 12349,
+            callback: () => {}
+        });
+        await new Promise(resolve => srv.server.on('listening', resolve));
+        await srv.close();
+    }
+}
+
 async function main() {
     await unauthorizedUpgrade();
     await customTimeouts();
     await queryParsing();
     await badCharset();
+    await startStopCycles();
 }
 
 main()

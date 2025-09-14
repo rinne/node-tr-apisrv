@@ -346,4 +346,16 @@ var ApiSrv = function(opts) {
         this.server.listen(this.port, this.address);
 };
 
+ApiSrv.prototype.close = function() {
+        return new Promise((resolve, reject) => {
+                this.server.close((err) => {
+                        if (err) {
+                                reject(err);
+                        } else {
+                                resolve();
+                        }
+                });
+        });
+};
+
 module.exports = ApiSrv;
