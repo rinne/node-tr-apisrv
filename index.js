@@ -2,7 +2,26 @@
 
 const http = require('http');
 const https = require('https');
-const qs = require('querystring')
+function parseQuery(str) {
+        const params = Object.create(null);
+        if (!str) {
+                return params;
+        }
+        const usp = new URLSearchParams(str.replace(/\+/g, '%20'));
+        for (const [key, value] of usp.entries()) {
+                if (Object.prototype.hasOwnProperty.call(params, key)) {
+                        const cur = params[key];
+                        if (Array.isArray(cur)) {
+                                cur.push(value);
+                        } else {
+                                params[key] = [cur, value];
+                        }
+                } else {
+                        params[key] = value;
+                }
+        }
+        return params;
+}
 
 var ApiSrv = function(opts) {
 	var proto = http;
@@ -81,16 +100,13 @@ var ApiSrv = function(opts) {
 	var upgradeCb = function(req, s, head) {
 		var m, r = {};
 		r.method = req.method;
-		if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
-			r.url = m[1];
-			if (! (r.params = qs.parse(m[2].toString('utf8')))) {
-				s.end();
-				return;
-			}
-		} else {
-			r.url = req.url;
-			r.params = {};
-		}
+                if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
+                        r.url = m[1];
+                        r.params = parseQuery(m[2].toString('utf8'));
+                } else {
+                        r.url = req.url;
+                        r.params = {};
+                }
 		r.headers = req.headers;
 		r.req = req;
 		return (Promise.resolve(this.authCallback(r))
@@ -177,13 +193,10 @@ var ApiSrv = function(opts) {
 				r.url = req.url;
 				r.method = req.method;
 				switch (contentType) {
-				case 'application/x-www-form-urlencoded':
-				case 'application/www-form-urlencoded':
-					if (! (r.params = qs.parse(body.toString('utf8')))) {
-						error(res, 400, 'Unable to parse query parameters.');
-						return;
-					}
-					break;
+                                case 'application/x-www-form-urlencoded':
+                                case 'application/www-form-urlencoded':
+                                        r.params = parseQuery(body.toString('utf8'));
+                                        break;
 				case 'application/json':
 					if (contentTypeArgs && (contentTypeArgs.toLowerCase() !== 'charset=utf-8')) {
 						error(res, 400, 'Bad charset for JSON content type.');
@@ -213,17 +226,14 @@ var ApiSrv = function(opts) {
 					error(res, 400, 'Empty body required for ' + req.method + ' requests.');
 					return;
 				}
-				var m;
-				if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
-					r.url = m[1];
-					if (! (r.params = qs.parse(m[2].toString('utf8')))) {
-						error(res, 400, 'Unable to parse query parameters.');
-						return;
-					}
-				} else {
-					r.url = req.url;
-					r.params = {};
-				}
+                                var m;
+                                if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
+                                        r.url = m[1];
+                                        r.params = parseQuery(m[2].toString('utf8'));
+                                } else {
+                                        r.url = req.url;
+                                        r.params = {};
+                                }
 				r.method = req.method;
 				break;
 			default:

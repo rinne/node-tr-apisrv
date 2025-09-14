@@ -63,9 +63,50 @@ async function customTimeouts() {
     }
 }
 
+async function queryParsing() {
+    const srv = new ApiSrv({
+        port: 12347,
+        callback: (r) => r.jsonResponse(r.params)
+    });
+
+    try {
+        const getRes = await new Promise((resolve, reject) => {
+            http.get({ port: 12347, path: '/?a=a+b' }, (res) => {
+                let data = '';
+                res.on('data', d => data += d);
+                res.on('end', () => resolve({ status: res.statusCode, data }));
+            }).on('error', reject);
+        });
+        if (getRes.status !== 200 || JSON.parse(getRes.data).a !== 'a b') {
+            throw new Error('GET query parsing failed');
+        }
+
+        const postRes = await new Promise((resolve, reject) => {
+            const req = http.request({
+                port: 12347,
+                method: 'POST',
+                path: '/',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+            }, (res) => {
+                let data = '';
+                res.on('data', d => data += d);
+                res.on('end', () => resolve({ status: res.statusCode, data }));
+            });
+            req.on('error', reject);
+            req.end('a=a+b');
+        });
+        if (postRes.status !== 200 || JSON.parse(postRes.data).a !== 'a b') {
+            throw new Error('POST query parsing failed');
+        }
+    } finally {
+        srv.server.close();
+    }
+}
+
 async function main() {
     await unauthorizedUpgrade();
     await customTimeouts();
+    await queryParsing();
 }
 
 main()
