@@ -3,6 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const http = require('http');
+const net = require('net');
 const ApiSrv = require('..');
 
 function httpRequest(port, { method = 'GET', path = '/', headers = {}, body } = {}) {
@@ -23,6 +24,20 @@ function httpRequest(port, { method = 'GET', path = '/', headers = {}, body } = 
             req.write(body);
         }
         req.end();
+    });
+}
+
+function rawRequest(port, raw) {
+    return new Promise((resolve, reject) => {
+        const socket = net.connect(port, '127.0.0.1');
+        let data = '';
+        socket.on('connect', () => socket.end(raw));
+        socket.on('data', (d) => data += d.toString());
+        socket.on('end', () => {
+            const m = data.match(/^HTTP\/1\.1\s+(\d+)/);
+            resolve(parseInt(m[1], 10));
+        });
+        socket.on('error', reject);
     });
 }
 
@@ -173,5 +188,75 @@ test('shutdown stops listening', async () => {
     await new Promise((resolve) => srv.server.on('listening', resolve));
     await srv.shutdown();
     await assert.rejects(httpRequest(port, { method: 'GET', path: '/' }));
+});
+
+test('rejects requests exceeding Content-Length limit without reading body', async () => {
+    const port = 12357;
+    const srv = new ApiSrv({
+        port,
+        maxBodySize: 5,
+        callback: () => {}
+    });
+    try {
+        const status = await rawRequest(port,
+            'POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n');
+        assert.strictEqual(status, 413);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('enforces Content-Length to match body length', async () => {
+    const port = 12358;
+    const srv = new ApiSrv({
+        port,
+        callback: () => {}
+    });
+    try {
+        const status = await rawRequest(port,
+            'POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 5\r\n\r\nabcd');
+        assert.strictEqual(status, 400);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('allows additional Content-Type parameters', async () => {
+    const port = 12359;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => r.jsonResponse(r.params)
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/',
+            headers: { 'Content-Type': 'application/json; charset=utf-8; version=1' },
+            body: JSON.stringify({ a: 1 })
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { a: 1 });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('rejects unsupported charset parameter', async () => {
+    const port = 12360;
+    const srv = new ApiSrv({
+        port,
+        callback: () => {}
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/',
+            headers: { 'Content-Type': 'application/json; charset=iso-8859-1' },
+            body: JSON.stringify({ a: 1 })
+        });
+        assert.strictEqual(res.status, 400);
+    } finally {
+        await srv.shutdown();
+    }
 });
 
