@@ -5,6 +5,8 @@ This is a simple API server providing with ability to easily create
 JSON API servers. Accepts also calls in www-form-urlencoded form
 and treats them identically to flat JSON key-value structure.
 
+Requires Node.js 18 or newer.
+
 ```
 const ApiSrv = require('tr-apisrv');
 
