@@ -86,23 +86,25 @@ var ApiSrv = function(opts) {
 		r.req = req;
 		return (Promise.resolve(this.authCallback(r))
 				.then(function(ret) {
-					if (ret) {
-						r.head = head;
-						r.s = s;
-						return opts.upgradeCallback(r);
-					} else {
-						s.destroy();
-						s = undefined;
-					}
-				}.bind(this))
-				.then(function(ret) {
-					if (ret !== false) {
-						if (this.debug) {
-							console.log('Upgrade successfully processed (resource :' + r.url + ').');
-						}
-					}
-				}.bind(this))
-				.catch(function(e) {
+                                        if (ret) {
+                                                r.head = head;
+                                                r.s = s;
+                                                return opts.upgradeCallback(r);
+                                        } else {
+                                                s.destroy();
+                                                s = undefined;
+                                               return false;
+                                       }
+                               }.bind(this))
+                               .then(function(ret) {
+                                       if (ret) {
+                                               if (this.debug) {
+                                                       console.log('Upgrade successfully processed (resource :' + r.url + ').');
+                                               }
+                                       }
+                                       return ret;
+                               }.bind(this))
+                               .catch(function(e) {
 					if (s) {
 						try {
 							s.destroy();
