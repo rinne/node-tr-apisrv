@@ -379,7 +379,8 @@ function findMatchInStore(store, path) {
     return null;
 }
 
-var ApiSrv = function(opts) {
+class ApiSrv {
+    constructor(opts) {
     var proto = http;
     var srvOpts = {};
     if (!(opts && (typeof(opts) === 'object'))) {
@@ -462,7 +463,7 @@ var ApiSrv = function(opts) {
         if (this.debug) {
             console.log('No authentication callback set.');
         }
-        this.authCallback = function(r) { return true; }.bind(this);
+        this.authCallback = (r) => true;
     }
     if ((opts.upgradeCallback !== undefined) && (opts.upgradeCallback !== null)) {
         if (typeof(opts.upgradeCallback) === 'function') {
@@ -494,7 +495,7 @@ var ApiSrv = function(opts) {
     srvOpts.headersTimeout = this.bodyReadTimeoutMs;
     srvOpts.requestTimeout = this.bodyReadTimeoutMs + 1;
 
-    var upgradeCb = async function(req, s, head) {
+    const upgradeCb = async (req, s, head) => {
         var m, r = {};
         r.method = req.method;
         if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
@@ -537,8 +538,8 @@ var ApiSrv = function(opts) {
             }
             return false;
         }
-    }.bind(this);
-    var requestCb = function(req, res) {
+    };
+    const requestCb = (req, res) => {
         var completed = false, body = Buffer.alloc(0), r = {}, timeout, bodySize = 0;
         var contentType, contentTypeArgs;
         var declaredContentLength;
@@ -562,7 +563,7 @@ var ApiSrv = function(opts) {
                 return;
             }
         }
-        var dataCb = function(data) {
+        const dataCb = (data) => {
             if (completed) {
                 return;
             }
@@ -594,8 +595,8 @@ var ApiSrv = function(opts) {
                 return;
             }
             body = Buffer.concat( [ body, data ] );
-        }.bind(this);
-        var endCb = async function() {
+        };
+        const endCb = async () => {
             if (completed) {
                 return;
             }
@@ -689,7 +690,7 @@ var ApiSrv = function(opts) {
             r.res = res;
             const paramSources = new Map();
             let effectiveBodyParams = (bodyParams && (typeof bodyParams === 'object')) ? bodyParams : Object.create(null);
-            r.jsonResponse = function(data, code, excludeNoCacheHeaders) {
+            r.jsonResponse = (data, code, excludeNoCacheHeaders) => {
                 var headers = { 'Content-Type': 'application/json; charset=utf-8' };
                 if (! excludeNoCacheHeaders) {
                     headers = Object.assign(headers,
@@ -705,9 +706,9 @@ var ApiSrv = function(opts) {
                     res.write(JSON.stringify(data));
                 }
                 res.end();
-            }.bind(this);
+            };
             try {
-                let handlerEntry = this._matchRequestHandler(r.method, r.url);
+                let handlerEntry = this.#matchRequestHandler(r.method, r.url);
                 let handler = handlerEntry ? handlerEntry.handler : undefined;
                 let handlerOptions = handlerEntry ? handlerEntry.options : undefined;
                 let pathParams = handlerEntry ? handlerEntry.params : Object.create(null);
@@ -717,7 +718,7 @@ var ApiSrv = function(opts) {
                         handlerOptions = undefined;
                         pathParams = Object.create(null);
                     } else {
-                        const hasOtherMethod = this._hasHandlerForOtherMethod(r.method, r.url);
+                        const hasOtherMethod = this.#hasHandlerForOtherMethod(r.method, r.url);
                         if (hasOtherMethod) {
                             jsonError(res, 405, 'Method Not Allowed');
                         } else {
@@ -802,8 +803,8 @@ var ApiSrv = function(opts) {
                 } catch(e) {
                 }
             }
-        }.bind(this);
-        var errorCb = function() {
+        };
+        const errorCb = () => {
             if (completed) {
                 return;
             }
@@ -813,21 +814,21 @@ var ApiSrv = function(opts) {
                 timeout = undefined;
             }
             error(res, 400, 'Error occured while reading the request data.');
-        }.bind(this);
-        var timeoutCb = function() {
+        };
+        const timeoutCb = () => {
             if (completed) {
                 return;
             }
             timeout = undefined;
             completed = true;
             error(res, 408, 'Timeout occured while reading the request data.');
-        }.bind(this);
+        };
         timeout = setTimeout(timeoutCb, this.bodyReadTimeoutMs);
         req.on('data', dataCb);
         req.on('end', endCb);
         req.on('error', errorCb);
-    }.bind(this);
-    var error = function(res, code, text, RFC6749EC) {
+    };
+    const error = (res, code, text, RFC6749EC) => {
         if (RFC6749EC) {
             // RFC6749 wants these errors to be code 400 except in case of 401
             res.writeHead((code != 401) ? 400 : 401,
@@ -857,8 +858,8 @@ var ApiSrv = function(opts) {
             res.write(JSON.stringify({ code, message }));
         }
         res.end();
-    }.bind(this);
-    var jsonError = function(res, code, message) {
+    };
+    const jsonError = (res, code, message) => {
         res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
         res.write(JSON.stringify({ message, code }));
         res.end();
@@ -878,85 +879,89 @@ var ApiSrv = function(opts) {
     this.server.headersTimeout = this.bodyReadTimeoutMs;
     this.server.requestTimeout = this.bodyReadTimeoutMs + 1;
     this.server.listen(this.port, this.address);
-};
+    }
 
-ApiSrv.prototype.requestHandleAdd = function(method, path, handler, options) {
-    const normalizedMethod = normalizeMethod(method);
-    if (typeof handler !== 'function') {
-        throw new Error(`Bad request handler callback for ${normalizedMethod} ${path}`);
+    requestHandleAdd(method, path, handler, options) {
+        const normalizedMethod = normalizeMethod(method);
+        if (typeof handler !== 'function') {
+            throw new Error(`Bad request handler callback for ${normalizedMethod} ${path}`);
+        }
+        const normalizedOptions = normalizeHandlerOptions(normalizedMethod, path, options);
+        const compiled = compilePathTemplate(path);
+        compiled.handler = handler;
+        compiled.options = normalizedOptions;
+        const store = getMethodStore(this._requestHandlers, normalizedMethod, true);
+        if (compiled.isExact) {
+            store.exact.set(compiled.template, compiled);
+        } else {
+            store.dynamic.set(compiled.template, compiled);
+        }
     }
-    const normalizedOptions = normalizeHandlerOptions(normalizedMethod, path, options);
-    const compiled = compilePathTemplate(path);
-    compiled.handler = handler;
-    compiled.options = normalizedOptions;
-    const store = getMethodStore(this._requestHandlers, normalizedMethod, true);
-    if (compiled.isExact) {
-        store.exact.set(compiled.template, compiled);
-    } else {
-        store.dynamic.set(compiled.template, compiled);
-    }
-};
 
-ApiSrv.prototype.requestHandleDelete = function(method, path) {
-    if (typeof path !== 'string' || !path.startsWith('/')) {
-        throw new Error(`Bad request handler path: ${path}`);
-    }
-    if (method === '*') {
-        let removed = false;
-        for (const [key, store] of this._requestHandlers.entries()) {
-            removed = removeFromStore(store, path) || removed;
-            if ((store.exact.size === 0) && (store.dynamic.size === 0)) {
-                this._requestHandlers.delete(key);
+    requestHandleDelete(method, path) {
+        if (typeof path !== 'string' || !path.startsWith('/')) {
+            throw new Error(`Bad request handler path: ${path}`);
+        }
+        if (method === '*') {
+            let removed = false;
+            for (const [key, store] of this._requestHandlers.entries()) {
+                removed = removeFromStore(store, path) || removed;
+                if ((store.exact.size === 0) && (store.dynamic.size === 0)) {
+                    this._requestHandlers.delete(key);
+                }
             }
+            return removed;
+        }
+        const normalizedMethod = normalizeMethod(method);
+        const store = this._requestHandlers.get(normalizedMethod);
+        if (!store) {
+            return false;
+        }
+        const removed = removeFromStore(store, path);
+        if ((store.exact.size === 0) && (store.dynamic.size === 0)) {
+            this._requestHandlers.delete(normalizedMethod);
         }
         return removed;
     }
-    const normalizedMethod = normalizeMethod(method);
-    const store = this._requestHandlers.get(normalizedMethod);
-    if (!store) {
+
+    #matchRequestHandler(method, path) {
+        const store = this._requestHandlers.get(method.toUpperCase());
+        if (!store) {
+            return null;
+        }
+        return findMatchInStore(store, path);
+    }
+
+    #hasHandlerForOtherMethod(method, path) {
+        const normalizedMethod = typeof method === 'string' ? method.toUpperCase() : method;
+        for (const [key, store] of this._requestHandlers.entries()) {
+            if (key === normalizedMethod) {
+                continue;
+            }
+            if (findMatchInStore(store, path)) {
+                return true;
+            }
+        }
         return false;
     }
-    const removed = removeFromStore(store, path);
-    if ((store.exact.size === 0) && (store.dynamic.size === 0)) {
-        this._requestHandlers.delete(normalizedMethod);
-    }
-    return removed;
-};
 
-ApiSrv.prototype._matchRequestHandler = function(method, path) {
-    const store = this._requestHandlers.get(method.toUpperCase());
-    if (!store) {
-        return null;
-    }
-    return findMatchInStore(store, path);
-};
-
-ApiSrv.prototype._hasHandlerForOtherMethod = function(method, path) {
-    const normalizedMethod = typeof method === 'string' ? method.toUpperCase() : method;
-    for (const [key, store] of this._requestHandlers.entries()) {
-        if (key === normalizedMethod) {
-            continue;
-        }
-        if (findMatchInStore(store, path)) {
-            return true;
-        }
-    }
-    return false;
-};
-
-ApiSrv.prototype.close = function() {
-    return new Promise((resolve, reject) => {
-        this.server.close((err) => {
-            if (err) {
-                reject(err);
-            } else {
-                resolve();
-            }
+    close() {
+        return new Promise((resolve, reject) => {
+            this.server.close((err) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve();
+                }
+            });
         });
-    });
-};
+    }
 
-// Backward compatible shutdown helper
-ApiSrv.prototype.shutdown = ApiSrv.prototype.close;
+    // Backward compatible shutdown helper
+    shutdown() {
+        return this.close();
+    }
+
+}
 
 module.exports = ApiSrv;
