@@ -20,6 +20,11 @@ const HTTP_STATUS_MESSAGES = {
     501: 'Not Implemented',
     503: 'Service Unavailable'
 };
+const PARAM_SOURCE_LABELS = {
+    body: 'request body',
+    query: 'query string',
+    path: 'path template'
+};
 function parseQuery(str) {
     const params = Object.create(null);
     if (!str) {
@@ -66,8 +71,28 @@ function isPlainObject(value) {
     return !!value && (typeof value === 'object') && !Array.isArray(value);
 }
 
-function escapeRegex(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function describePath(path) {
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+        throw new Error(`Bad request path: ${path}`);
+    }
+    if (path === '/') {
+        return { segments: [], hasTrailingSlash: false };
+    }
+    const hasTrailingSlash = (path.length > 1) && path.endsWith('/');
+    const trimmed = hasTrailingSlash ? path.slice(0, -1) : path;
+    if (trimmed === '/') {
+        return { segments: [], hasTrailingSlash: true };
+    }
+    const segments = trimmed.slice(1).split('/');
+    return { segments, hasTrailingSlash };
+}
+
+function decodePathSegment(segment) {
+    try {
+        return decodeURIComponent(segment);
+    } catch (e) {
+        return null;
+    }
 }
 
 function compilePathTemplate(path) {
@@ -75,27 +100,153 @@ function compilePathTemplate(path) {
         throw new Error(`Bad request handler path: ${path}`);
     }
     if (path === '/') {
-        return { isExact: true, template: path, regex: /^\/$/ };
+        return {
+            isExact: true,
+            template: path,
+            segments: [],
+            hasTrailingSlash: false,
+            hasSplat: false,
+            minSegments: 0,
+            minSegmentsFrom: [0]
+        };
     }
-    const parts = path.split('/').slice(1); // skip leading empty string
-    let regex = '^';
-    let hasParams = false;
-    for (const part of parts) {
-        regex += '/';
+    const hasTrailingSlash = (path.length > 1) && path.endsWith('/');
+    const trimmed = hasTrailingSlash ? path.slice(0, -1) : path;
+    const rawSegments = trimmed.slice(1).split('/');
+    const segments = [];
+    let hasDynamic = false;
+    let hasSplat = false;
+    for (const part of rawSegments) {
         if (part === '') {
-            // trailing slash
+            segments.push({ type: 'literal', value: '' });
             continue;
         }
-        const paramMatch = part.match(/^\{([A-Za-z0-9_]+)\}$/);
-        if (paramMatch) {
-            hasParams = true;
-            regex += '([^/]+)';
+        let match;
+        if ((match = part.match(/^\{([A-Za-z0-9_]+)\}$/))) {
+            hasDynamic = true;
+            segments.push({ type: 'param', name: match[1] });
+        } else if ((match = part.match(/^\[([A-Za-z0-9_]+)\]$/))) {
+            hasDynamic = true;
+            hasSplat = true;
+            segments.push({ type: 'splat', name: match[1] });
         } else {
-            regex += escapeRegex(part);
+            segments.push({ type: 'literal', value: part });
         }
     }
-    regex += '$';
-    return { isExact: !hasParams, template: path, regex: new RegExp(regex) };
+    const minSegmentsFrom = new Array(segments.length + 1);
+    minSegmentsFrom[segments.length] = 0;
+    for (let i = segments.length - 1; i >= 0; i--) {
+        minSegmentsFrom[i] = minSegmentsFrom[i + 1] + 1;
+    }
+    return {
+        isExact: !hasDynamic,
+        template: path,
+        segments,
+        hasTrailingSlash,
+        hasSplat,
+        minSegments: minSegmentsFrom[0],
+        minSegmentsFrom
+    };
+}
+
+function matchCompiledPath(compiled, pathInfo) {
+    if (compiled.hasTrailingSlash !== pathInfo.hasTrailingSlash) {
+        return null;
+    }
+    if (pathInfo.segments.length < compiled.minSegments) {
+        return null;
+    }
+    if (!compiled.hasSplat && (pathInfo.segments.length !== compiled.segments.length)) {
+        return null;
+    }
+    if (compiled.segments.length === 0) {
+        return pathInfo.segments.length === 0 ? {} : null;
+    }
+
+    const segments = compiled.segments;
+    const reqSegments = pathInfo.segments;
+
+    function matchRecursive(tIndex, rIndex) {
+        if (tIndex === segments.length) {
+            return (rIndex === reqSegments.length) ? {} : null;
+        }
+        const segment = segments[tIndex];
+        if (segment.type === 'literal') {
+            if ((rIndex >= reqSegments.length) || (segment.value !== reqSegments[rIndex])) {
+                return null;
+            }
+            return matchRecursive(tIndex + 1, rIndex + 1);
+        }
+        if (segment.type === 'param') {
+            if (rIndex >= reqSegments.length) {
+                return null;
+            }
+            const decoded = decodePathSegment(reqSegments[rIndex]);
+            if (decoded === null) {
+                return null;
+            }
+            const rest = matchRecursive(tIndex + 1, rIndex + 1);
+            if (!rest) {
+                return null;
+            }
+            rest[segment.name] = decoded;
+            return rest;
+        }
+        if (segment.type === 'splat') {
+            if (rIndex >= reqSegments.length) {
+                return null;
+            }
+            const minRemaining = compiled.minSegmentsFrom[tIndex + 1];
+            const maxLen = reqSegments.length - minRemaining;
+            if (maxLen < 1) {
+                return null;
+            }
+            for (let len = 1; len <= maxLen; len++) {
+                const slice = reqSegments.slice(rIndex, rIndex + len);
+                const decodedSlice = [];
+                let failed = false;
+                for (const part of slice) {
+                    const decoded = decodePathSegment(part);
+                    if (decoded === null) {
+                        failed = true;
+                        break;
+                    }
+                    decodedSlice.push(decoded);
+                }
+                if (failed) {
+                    continue;
+                }
+                const rest = matchRecursive(tIndex + 1, rIndex + len);
+                if (!rest) {
+                    continue;
+                }
+                rest[segment.name] = decodedSlice;
+                return rest;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    return matchRecursive(0, 0);
+}
+
+function assignParams(target, source, sourceType, sources) {
+    if (!source) {
+        return;
+    }
+    for (const [key, value] of Object.entries(source)) {
+        if (Object.prototype.hasOwnProperty.call(target, key)) {
+            const previous = sources.get(key);
+            if (previous && previous !== sourceType) {
+                const prevLabel = PARAM_SOURCE_LABELS[previous] || previous;
+                const currentLabel = PARAM_SOURCE_LABELS[sourceType] || sourceType;
+                console.warn(`ApiSrv warning: parameter "${key}" from ${currentLabel} overrides value from ${prevLabel}.`);
+            }
+        }
+        target[key] = value;
+        sources.set(key, sourceType);
+    }
 }
 
 function normalizeMethod(method) {
@@ -135,11 +286,13 @@ function findMatchInStore(store, path) {
     }
     const exact = store.exact.get(path);
     if (exact) {
-        return exact;
+        return { handler: exact.handler, params: {} };
     }
+    const pathInfo = describePath(path);
     for (const entry of store.dynamic.values()) {
-        if (entry.regex.test(path)) {
-            return entry;
+        const params = matchCompiledPath(entry, pathInfo);
+        if (params) {
+            return { handler: entry.handler, params };
         }
     }
     return null;
@@ -356,6 +509,8 @@ var ApiSrv = function(opts) {
                     return;
                 }
             }
+            let bodyParams;
+            let queryParams;
             switch (req.method) {
             case 'POST':
             case 'PUT':
@@ -368,7 +523,7 @@ var ApiSrv = function(opts) {
                 switch (contentType) {
                 case 'application/x-www-form-urlencoded':
                 case 'application/www-form-urlencoded':
-                    r.params = parseQuery(body.toString('utf8'));
+                    bodyParams = parseQuery(body.toString('utf8'));
                     break;
                 case 'application/json':
                     if (contentTypeArgs && contentTypeArgs.charset && (contentTypeArgs.charset !== 'utf-8')) {
@@ -376,11 +531,11 @@ var ApiSrv = function(opts) {
                         return;
                     }
                     try {
-                        r.params = JSON.parse(body.toString('utf8'));
+                        bodyParams = JSON.parse(body.toString('utf8'));
                     } catch(e) {
-                        r.params = undefined;
+                        bodyParams = undefined;
                     }
-                    if (! (r.params && (typeof(r.params) === 'object'))) {
+                    if (! (bodyParams && (typeof(bodyParams) === 'object'))) {
                         error(res, 400, 'Unable to parse JSON query parameters.');
                         return;
                     }
@@ -403,10 +558,10 @@ var ApiSrv = function(opts) {
                 var m;
                 if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
                     r.url = m[1];
-                    r.params = parseQuery(m[2].toString('utf8'));
+                    queryParams = parseQuery(m[2].toString('utf8'));
                 } else {
                     r.url = req.url;
-                    r.params = {};
+                    queryParams = {};
                 }
                 r.method = req.method;
                 break;
@@ -416,6 +571,10 @@ var ApiSrv = function(opts) {
             }
             r.headers = req.headers;
             r.res = res;
+            const paramSources = new Map();
+            r.params = {};
+            assignParams(r.params, bodyParams, 'body', paramSources);
+            assignParams(r.params, queryParams, 'query', paramSources);
             r.jsonResponse = function(data, code, excludeNoCacheHeaders) {
                 var headers = { 'Content-Type': 'application/json; charset=utf-8' };
                 if (! excludeNoCacheHeaders) {
@@ -435,6 +594,9 @@ var ApiSrv = function(opts) {
             }.bind(this);
             try {
                 let handlerEntry = this._matchRequestHandler(r.method, r.url);
+                if (handlerEntry && handlerEntry.params) {
+                    assignParams(r.params, handlerEntry.params, 'path', paramSources);
+                }
                 let handler = handlerEntry ? handlerEntry.handler : undefined;
                 if (!handler) {
                     if (this.callback) {

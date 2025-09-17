@@ -131,22 +131,31 @@ test('requestHandlers take precedence over callback', async () => {
     }
 });
 
-test('requestHandlers support path templates', async () => {
+test('requestHandlers support path templates', async (t) => {
     const port = 12362;
+    const warnings = [];
+    const warnMock = t.mock.method(console, 'warn', (...args) => warnings.push(args.join(' ')));
     const srv = new ApiSrv({
         port,
         callback: (r) => r.jsonResponse({ handled: 'callback' }),
         requestHandlers: {
             GET: {
-                '/user/{userId}': (r) => r.jsonResponse({ handled: 'requestHandlers', url: r.url })
+                '/user/{userId}': (r) => r.jsonResponse({ handled: 'requestHandlers', params: r.params })
             }
         }
     });
     try {
-        const res = await httpRequest(port, { method: 'GET', path: '/user/123?foo=bar' });
+        const res = await httpRequest(port, { method: 'GET', path: '/user/123?foo=bar&userId=query' });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'requestHandlers', url: '/user/123' });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            handled: 'requestHandlers',
+            params: { foo: 'bar', userId: '123' }
+        });
+        assert.strictEqual(warnings.length, 1);
+        assert.match(warnings[0], /userId/);
+        assert.match(warnings[0], /query string/);
     } finally {
+        t.mock.restoreAll();
         await srv.shutdown();
     }
 });
@@ -167,6 +176,83 @@ test('falls back to callback when requestHandlers do not match', async () => {
         assert.strictEqual(res.status, 200);
         assert.deepStrictEqual(JSON.parse(res.data), { handled: 'callback' });
     } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers capture array segments with [variable]', async () => {
+    const port = 12367;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[pathParts]': (r) => r.jsonResponse({ params: r.params })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/files/foo/bar/baz' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { params: { pathParts: ['foo', 'bar', 'baz'] } });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers capture [variable] segments in the middle of a template', async () => {
+    const port = 12368;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/{cmd}/[zap]/{bar}/{pup}': (r) => r.jsonResponse({ params: r.params })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/do/one/two/three/four' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: {
+                cmd: 'do',
+                zap: ['one', 'two'],
+                bar: 'three',
+                pup: 'four'
+            }
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('path parameters override body parameters with warning', async (t) => {
+    const port = 12369;
+    const warnings = [];
+    const warnMock = t.mock.method(console, 'warn', (...args) => warnings.push(args.join(' ')));
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            POST: {
+                '/user/{userId}': (r) => r.jsonResponse({ params: r.params })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/user/123',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: 'fromBody', name: 'alice' })
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { userId: '123', name: 'alice' }
+        });
+        assert.strictEqual(warnings.length, 1);
+        assert.match(warnings[0], /userId/);
+        assert.match(warnings[0], /request body/);
+    } finally {
+        t.mock.restoreAll();
         await srv.shutdown();
     }
 });

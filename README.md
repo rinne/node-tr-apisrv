@@ -66,6 +66,21 @@ srv.requestHandleDelete('GET', '/foo/bar');
 srv.requestHandleDelete('*', '/foo/bar');
 ```
 
+Path templates support dynamic components that are automatically decoded and
+merged into `r.params`:
+
+* `{variable}` matches exactly one path segment and assigns the decoded value to
+  `r.params.variable` (for example `/user/{userId}` captures the identifier from
+  `/user/123`).
+* `[variable]` matches one or more consecutive segments and assigns an array of
+  decoded values to `r.params.variable`. When used between literal or `{}`
+  components (for example `/{cmd}/[zap]/{bar}/{pup}`), it captures all segments
+  required to allow the remainder of the template to match.
+
+Values extracted from the path take precedence over query string parameters,
+which in turn override values parsed from the request body. The server prints a
+warning whenever a later source overrides an earlier value.
+
 Examples
 ========
 
