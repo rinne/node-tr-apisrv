@@ -89,7 +89,9 @@ can be disabled by constructing the server with `rejectDangerousPaths: false`.
 
 Values extracted from the path take precedence over query string parameters,
 which in turn override values parsed from the request body. The server prints a
-warning whenever a later source overrides an earlier value.
+warning whenever a later source overrides an earlier value. Individual sources
+are always available as `r.pathParams`, `r.urlParams`, and `r.bodyParams`
+respectively when handling a request.
 
 Examples
 ========
@@ -104,8 +106,8 @@ async function cb(r) {
         const m = r.url.match(/^\/user\/([^/]+)$/);
         if (m) {
             const id = m[1];
-            // r.params contains parsed query string values
-            return r.jsonResponse({ id, params: r.params });
+            // r.urlParams contains parsed query string values
+            return r.jsonResponse({ id, params: r.params, query: r.urlParams });
         }
     }
 }
@@ -121,8 +123,8 @@ async function cb(r) {
         const m = r.url.match(/^\/user\/([^/]+)$/);
         if (m) {
             const id = m[1];
-            // Body is already parsed into r.params
-            return r.jsonResponse({ id, received: r.params });
+            // Body is already parsed into r.params and r.bodyParams
+            return r.jsonResponse({ id, received: r.params, body: r.bodyParams });
         }
     }
 }

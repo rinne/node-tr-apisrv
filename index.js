@@ -428,11 +428,16 @@ var ApiSrv = function(opts) {
         r.method = req.method;
         if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
             r.url = m[1];
-            r.params = parseQuery(m[2].toString('utf8'));
+            const queryOnlyParams = parseQuery(m[2].toString('utf8'));
+            r.urlParams = queryOnlyParams;
+            r.params = queryOnlyParams;
         } else {
             r.url = req.url;
-            r.params = {};
+            r.urlParams = Object.create(null);
+            r.params = Object.create(null);
         }
+        r.bodyParams = Object.create(null);
+        r.pathParams = Object.create(null);
         r.headers = req.headers;
         r.req = req;
         try {
@@ -612,9 +617,12 @@ var ApiSrv = function(opts) {
             r.headers = req.headers;
             r.res = res;
             const paramSources = new Map();
+            r.bodyParams = (bodyParams && (typeof bodyParams === 'object')) ? bodyParams : Object.create(null);
+            r.urlParams = (queryParams && (typeof queryParams === 'object')) ? queryParams : Object.create(null);
+            r.pathParams = Object.create(null);
             r.params = {};
-            assignParams(r.params, bodyParams, 'body', paramSources);
-            assignParams(r.params, queryParams, 'query', paramSources);
+            assignParams(r.params, r.bodyParams, 'body', paramSources);
+            assignParams(r.params, r.urlParams, 'query', paramSources);
             r.jsonResponse = function(data, code, excludeNoCacheHeaders) {
                 var headers = { 'Content-Type': 'application/json; charset=utf-8' };
                 if (! excludeNoCacheHeaders) {
@@ -634,8 +642,10 @@ var ApiSrv = function(opts) {
             }.bind(this);
             try {
                 let handlerEntry = this._matchRequestHandler(r.method, r.url);
-                if (handlerEntry && handlerEntry.params) {
-                    assignParams(r.params, handlerEntry.params, 'path', paramSources);
+                const pathParams = handlerEntry ? handlerEntry.params : undefined;
+                if (pathParams) {
+                    r.pathParams = pathParams;
+                    assignParams(r.params, r.pathParams, 'path', paramSources);
                 }
                 let handler = handlerEntry ? handlerEntry.handler : undefined;
                 if (!handler) {

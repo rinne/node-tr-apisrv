@@ -45,12 +45,24 @@ test('handles GET requests', async () => {
     const port = 12350;
     const srv = new ApiSrv({
         port,
-        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+        callback: (r) => r.jsonResponse({
+            method: r.method,
+            params: r.params,
+            pathParams: r.pathParams,
+            urlParams: r.urlParams,
+            bodyParams: r.bodyParams
+        })
     });
     try {
         const res = await httpRequest(port, { method: 'GET', path: '/?a=1' });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { method: 'GET', params: { a: '1' } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            method: 'GET',
+            params: { a: '1' },
+            pathParams: {},
+            urlParams: { a: '1' },
+            bodyParams: {}
+        });
     } finally {
         await srv.shutdown();
     }
@@ -60,7 +72,13 @@ test('handles POST requests', async () => {
     const port = 12351;
     const srv = new ApiSrv({
         port,
-        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+        callback: (r) => r.jsonResponse({
+            method: r.method,
+            params: r.params,
+            pathParams: r.pathParams,
+            urlParams: r.urlParams,
+            bodyParams: r.bodyParams
+        })
     });
     try {
         const res = await httpRequest(port, {
@@ -70,7 +88,13 @@ test('handles POST requests', async () => {
             body: JSON.stringify({ a: 1 })
         });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { method: 'POST', params: { a: 1 } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            method: 'POST',
+            params: { a: 1 },
+            pathParams: {},
+            urlParams: {},
+            bodyParams: { a: 1 }
+        });
     } finally {
         await srv.shutdown();
     }
@@ -80,7 +104,13 @@ test('handles PUT requests', async () => {
     const port = 12352;
     const srv = new ApiSrv({
         port,
-        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+        callback: (r) => r.jsonResponse({
+            method: r.method,
+            params: r.params,
+            pathParams: r.pathParams,
+            urlParams: r.urlParams,
+            bodyParams: r.bodyParams
+        })
     });
     try {
         const res = await httpRequest(port, {
@@ -90,7 +120,13 @@ test('handles PUT requests', async () => {
             body: 'a=1'
         });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { method: 'PUT', params: { a: '1' } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            method: 'PUT',
+            params: { a: '1' },
+            pathParams: {},
+            urlParams: {},
+            bodyParams: { a: '1' }
+        });
     } finally {
         await srv.shutdown();
     }
@@ -100,12 +136,24 @@ test('handles DELETE requests', async () => {
     const port = 12353;
     const srv = new ApiSrv({
         port,
-        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+        callback: (r) => r.jsonResponse({
+            method: r.method,
+            params: r.params,
+            pathParams: r.pathParams,
+            urlParams: r.urlParams,
+            bodyParams: r.bodyParams
+        })
     });
     try {
         const res = await httpRequest(port, { method: 'DELETE', path: '/?a=1' });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { method: 'DELETE', params: { a: '1' } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            method: 'DELETE',
+            params: { a: '1' },
+            pathParams: {},
+            urlParams: { a: '1' },
+            bodyParams: {}
+        });
     } finally {
         await srv.shutdown();
     }
@@ -140,7 +188,13 @@ test('requestHandlers support path templates', async (t) => {
         callback: (r) => r.jsonResponse({ handled: 'callback' }),
         requestHandlers: {
             GET: {
-                '/user/{userId}': (r) => r.jsonResponse({ handled: 'requestHandlers', params: r.params })
+                '/user/{userId}': (r) => r.jsonResponse({
+                    handled: 'requestHandlers',
+                    params: r.params,
+                    pathParams: r.pathParams,
+                    urlParams: r.urlParams,
+                    bodyParams: r.bodyParams
+                })
             }
         }
     });
@@ -149,7 +203,10 @@ test('requestHandlers support path templates', async (t) => {
         assert.strictEqual(res.status, 200);
         assert.deepStrictEqual(JSON.parse(res.data), {
             handled: 'requestHandlers',
-            params: { foo: 'bar', userId: '123' }
+            params: { foo: 'bar', userId: '123' },
+            pathParams: { userId: '123' },
+            urlParams: { foo: 'bar', userId: 'query' },
+            bodyParams: {}
         });
         assert.strictEqual(warnings.length, 1);
         assert.match(warnings[0], /userId/);
@@ -214,18 +271,33 @@ test('dynamic template without trailing slash matches both forms', async () => {
         port,
         requestHandlers: {
             GET: {
-                '/user/{userId}': (r) => r.jsonResponse({ params: r.params })
+                '/user/{userId}': (r) => r.jsonResponse({
+                    params: r.params,
+                    pathParams: r.pathParams,
+                    urlParams: r.urlParams,
+                    bodyParams: r.bodyParams
+                })
             }
         }
     });
     try {
         let res = await httpRequest(port, { method: 'GET', path: '/user/abc' });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { params: { userId: 'abc' } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { userId: 'abc' },
+            pathParams: { userId: 'abc' },
+            urlParams: {},
+            bodyParams: {}
+        });
 
         res = await httpRequest(port, { method: 'GET', path: '/user/abc/' });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { params: { userId: 'abc' } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { userId: 'abc' },
+            pathParams: { userId: 'abc' },
+            urlParams: {},
+            bodyParams: {}
+        });
     } finally {
         await srv.shutdown();
     }
@@ -282,14 +354,17 @@ test('requestHandlers capture array segments with [variable]', async () => {
         port,
         requestHandlers: {
             GET: {
-                '/files/[pathParts]': (r) => r.jsonResponse({ params: r.params })
+                '/files/[pathParts]': (r) => r.jsonResponse({ params: r.params, pathParams: r.pathParams })
             }
         }
     });
     try {
         const res = await httpRequest(port, { method: 'GET', path: '/files/foo/bar/baz' });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { params: { pathParts: ['foo', 'bar', 'baz'] } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { pathParts: ['foo', 'bar', 'baz'] },
+            pathParams: { pathParts: ['foo', 'bar', 'baz'] }
+        });
     } finally {
         await srv.shutdown();
     }
@@ -301,7 +376,7 @@ test('requestHandlers capture [variable] segments in the middle of a template', 
         port,
         requestHandlers: {
             GET: {
-                '/{cmd}/[zap]/{bar}/{pup}': (r) => r.jsonResponse({ params: r.params })
+                '/{cmd}/[zap]/{bar}/{pup}': (r) => r.jsonResponse({ params: r.params, pathParams: r.pathParams })
             }
         }
     });
@@ -310,6 +385,12 @@ test('requestHandlers capture [variable] segments in the middle of a template', 
         assert.strictEqual(res.status, 200);
         assert.deepStrictEqual(JSON.parse(res.data), {
             params: {
+                cmd: 'do',
+                zap: ['one', 'two'],
+                bar: 'three',
+                pup: 'four'
+            },
+            pathParams: {
                 cmd: 'do',
                 zap: ['one', 'two'],
                 bar: 'three',
@@ -329,7 +410,12 @@ test('path parameters override body parameters with warning', async (t) => {
         port,
         requestHandlers: {
             POST: {
-                '/user/{userId}': (r) => r.jsonResponse({ params: r.params })
+                '/user/{userId}': (r) => r.jsonResponse({
+                    params: r.params,
+                    pathParams: r.pathParams,
+                    urlParams: r.urlParams,
+                    bodyParams: r.bodyParams
+                })
             }
         }
     });
@@ -342,7 +428,10 @@ test('path parameters override body parameters with warning', async (t) => {
         });
         assert.strictEqual(res.status, 200);
         assert.deepStrictEqual(JSON.parse(res.data), {
-            params: { userId: '123', name: 'alice' }
+            params: { userId: '123', name: 'alice' },
+            pathParams: { userId: '123' },
+            urlParams: {},
+            bodyParams: { userId: 'fromBody', name: 'alice' }
         });
         assert.strictEqual(warnings.length, 1);
         assert.match(warnings[0], /userId/);
