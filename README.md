@@ -67,6 +67,41 @@ srv.requestHandleDelete('GET', '/foo/bar');
 srv.requestHandleDelete('*', '/foo/bar');
 ```
 
+Each handler entry can be either a callback function or an object with a
+`callback` property and an optional `options` object:
+
+```javascript
+const srv = new ApiSrv({
+    port: 8808,
+    requestHandlers: {
+        GET: {
+            '/user/{userId}': {
+                callback: getUser,
+                options: {
+                    pathParamsValidator: (params) => ({ userId: Number(params.userId) }),
+                    urlParamsValidator: async (query) => ({ page: Number(query.page ?? 1) }),
+                    paramsValidator: (params) => ({ ...params, validated: true })
+                }
+            }
+        }
+    }
+});
+```
+
+The supported handler options are:
+
+* `pathParamsValidator`: validate and optionally transform `r.pathParams`.
+* `urlParamsValidator`: validate and optionally transform `r.urlParams`.
+* `bodyParamsValidator`: validate and optionally transform `r.bodyParams`.
+* `paramsValidator`: validate the merged `r.params` before the handler runs.
+* `ignoreUrlParams`: when `true`, the query string is ignored (`r.urlParams`
+  is left undefined and `urlParamsValidator` is not called).
+
+Validator callbacks may be synchronous or asynchronous. They must return the
+new object to use in place of the original input and may throw to signal a bad
+request. The same `options` object can be supplied when adding handlers at
+runtime with `srv.requestHandleAdd(method, path, callback, options)`.
+
 Path templates support dynamic components that are automatically decoded and
 merged into `r.params`:
 

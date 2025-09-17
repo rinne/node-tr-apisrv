@@ -348,6 +348,40 @@ test('falls back to callback when requestHandlers do not match', async () => {
     }
 });
 
+test('request handler definition objects apply validators', async () => {
+    const port = 12376;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/validate/{userId}': {
+                    callback: (r) => r.jsonResponse({
+                        params: r.params,
+                        pathParams: r.pathParams,
+                        urlParams: r.urlParams
+                    }),
+                    options: {
+                        pathParamsValidator: (pathParams) => ({ userId: Number(pathParams.userId) }),
+                        urlParamsValidator: async (urlParams) => ({ limit: Number(urlParams.limit) }),
+                        paramsValidator: async (params) => ({ ...params, validated: true })
+                    }
+                }
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/validate/42?limit=5' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { limit: 5, userId: 42, validated: true },
+            pathParams: { userId: 42 },
+            urlParams: { limit: 5 }
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
 test('requestHandlers capture array segments with [variable]', async () => {
     const port = 12367;
     const srv = new ApiSrv({
@@ -397,6 +431,44 @@ test('requestHandlers capture [variable] segments in the middle of a template', 
                 pup: 'four'
             }
         });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('ignoreUrlParams prevents query parsing', async () => {
+    const port = 12377;
+    let urlValidatorCalled = false;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/items/{itemId}': {
+                    callback: (r) => r.jsonResponse({
+                        params: r.params,
+                        pathParams: r.pathParams,
+                        hasUrlParams: Object.prototype.hasOwnProperty.call(r, 'urlParams')
+                    }),
+                    options: {
+                        ignoreUrlParams: true,
+                        urlParamsValidator: () => {
+                            urlValidatorCalled = true;
+                            return {};
+                        }
+                    }
+                }
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/items/abc?foo=bar' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { itemId: 'abc' },
+            pathParams: { itemId: 'abc' },
+            hasUrlParams: false
+        });
+        assert.strictEqual(urlValidatorCalled, false);
     } finally {
         await srv.shutdown();
     }
@@ -579,6 +651,41 @@ test('requestHandleAdd and requestHandleDelete modify handlers at runtime', asyn
         body = JSON.parse(res.data);
         assert.strictEqual(body.code, 404);
         assert.strictEqual(body.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandleAdd supports validator options', async () => {
+    const port = 12378;
+    const srv = new ApiSrv({ port });
+    srv.requestHandleAdd('POST', '/items/{itemId}', (r) => r.jsonResponse({
+        params: r.params,
+        pathParams: r.pathParams,
+        bodyParams: r.bodyParams,
+        urlParams: r.urlParams
+    }), {
+        pathParamsValidator: (pathParams) => ({ itemId: Number(pathParams.itemId) }),
+        bodyParamsValidator: async (bodyParams) => ({
+            name: bodyParams.name.toUpperCase(),
+            count: Number(bodyParams.count)
+        }),
+        paramsValidator: (params) => ({ ...params, validated: true })
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/items/5',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'foo', count: '3' })
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { name: 'FOO', count: 3, itemId: 5, validated: true },
+            pathParams: { itemId: 5 },
+            bodyParams: { name: 'FOO', count: 3 },
+            urlParams: {}
+        });
     } finally {
         await srv.shutdown();
     }

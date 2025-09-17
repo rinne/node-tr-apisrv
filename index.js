@@ -25,6 +25,13 @@ const PARAM_SOURCE_LABELS = {
     query: 'query string',
     path: 'path template'
 };
+const HANDLER_OPTION_KEYS = new Set([
+    'paramsValidator',
+    'pathParamsValidator',
+    'urlParamsValidator',
+    'bodyParamsValidator',
+    'ignoreUrlParams'
+]);
 
 function detectDangerousPath(path) {
     if (typeof path !== 'string') {
@@ -88,6 +95,54 @@ function parseContentType(str) {
 
 function isPlainObject(value) {
     return !!value && (typeof value === 'object') && !Array.isArray(value);
+}
+
+function normalizeHandlerOptions(method, path, options) {
+    if (options === undefined) {
+        return undefined;
+    }
+    if (!isPlainObject(options)) {
+        throw new Error(`Bad request handler options for ${method} ${path}`);
+    }
+    for (const key of Object.keys(options)) {
+        if (!HANDLER_OPTION_KEYS.has(key)) {
+            throw new Error(`Unsupported request handler option "${key}" for ${method} ${path}`);
+        }
+    }
+    const normalized = {};
+    if (options.paramsValidator !== undefined) {
+        if (typeof options.paramsValidator !== 'function') {
+            throw new Error(`paramsValidator must be a function for ${method} ${path}`);
+        }
+        normalized.paramsValidator = options.paramsValidator;
+    }
+    if (options.pathParamsValidator !== undefined) {
+        if (typeof options.pathParamsValidator !== 'function') {
+            throw new Error(`pathParamsValidator must be a function for ${method} ${path}`);
+        }
+        normalized.pathParamsValidator = options.pathParamsValidator;
+    }
+    if (options.urlParamsValidator !== undefined) {
+        if (typeof options.urlParamsValidator !== 'function') {
+            throw new Error(`urlParamsValidator must be a function for ${method} ${path}`);
+        }
+        normalized.urlParamsValidator = options.urlParamsValidator;
+    }
+    if (options.bodyParamsValidator !== undefined) {
+        if (typeof options.bodyParamsValidator !== 'function') {
+            throw new Error(`bodyParamsValidator must be a function for ${method} ${path}`);
+        }
+        normalized.bodyParamsValidator = options.bodyParamsValidator;
+    }
+    if (options.ignoreUrlParams !== undefined) {
+        if (typeof options.ignoreUrlParams !== 'boolean') {
+            throw new Error(`ignoreUrlParams must be a boolean for ${method} ${path}`);
+        }
+        if (options.ignoreUrlParams) {
+            normalized.ignoreUrlParams = true;
+        }
+    }
+    return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 function describePath(path) {
@@ -305,20 +360,20 @@ function findMatchInStore(store, path) {
     }
     let exact = store.exact.get(path);
     if (exact) {
-        return { handler: exact.handler, params: {} };
+        return { handler: exact.handler, options: exact.options, params: {} };
     }
     if ((path.length > 1) && path.endsWith('/')) {
         const trimmed = path.slice(0, -1);
         exact = store.exact.get(trimmed);
         if (exact && !exact.hasTrailingSlash) {
-            return { handler: exact.handler, params: {} };
+            return { handler: exact.handler, options: exact.options, params: {} };
         }
     }
     const pathInfo = describePath(path);
     for (const entry of store.dynamic.values()) {
         const params = matchCompiledPath(entry, pathInfo);
         if (params) {
-            return { handler: entry.handler, params };
+            return { handler: entry.handler, options: entry.options, params };
         }
     }
     return null;
@@ -376,8 +431,24 @@ var ApiSrv = function(opts) {
             if (!isPlainObject(handlers)) {
                 throw new Error(`Bad requestHandlers for method ${method}`);
             }
-            for (const [path, handler] of Object.entries(handlers)) {
-                this.requestHandleAdd(method, path, handler);
+            for (const [path, handlerDef] of Object.entries(handlers)) {
+                if (typeof handlerDef === 'function') {
+                    this.requestHandleAdd(method, path, handlerDef);
+                    continue;
+                }
+                if (isPlainObject(handlerDef)) {
+                    for (const key of Object.keys(handlerDef)) {
+                        if (key !== 'callback' && key !== 'options') {
+                            throw new Error(`Unsupported request handler definition key "${key}" for ${method} ${path}`);
+                        }
+                    }
+                    if (typeof handlerDef.callback !== 'function') {
+                        throw new Error(`Bad request handler callback for ${method} ${path}`);
+                    }
+                    this.requestHandleAdd(method, path, handlerDef.callback, handlerDef.options);
+                    continue;
+                }
+                throw new Error(`Bad request handler callback for ${method} ${path}`);
             }
         }
     }
@@ -548,7 +619,7 @@ var ApiSrv = function(opts) {
                 }
             }
             let bodyParams;
-            let queryParams;
+            let rawQueryString;
             switch (req.method) {
             case 'POST':
             case 'PUT':
@@ -596,10 +667,10 @@ var ApiSrv = function(opts) {
                 var m;
                 if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
                     r.url = m[1];
-                    queryParams = parseQuery(m[2].toString('utf8'));
+                    rawQueryString = m[2].toString('utf8');
                 } else {
                     r.url = req.url;
-                    queryParams = {};
+                    rawQueryString = undefined;
                 }
                 r.method = req.method;
                 break;
@@ -617,12 +688,7 @@ var ApiSrv = function(opts) {
             r.headers = req.headers;
             r.res = res;
             const paramSources = new Map();
-            r.bodyParams = (bodyParams && (typeof bodyParams === 'object')) ? bodyParams : Object.create(null);
-            r.urlParams = (queryParams && (typeof queryParams === 'object')) ? queryParams : Object.create(null);
-            r.pathParams = Object.create(null);
-            r.params = {};
-            assignParams(r.params, r.bodyParams, 'body', paramSources);
-            assignParams(r.params, r.urlParams, 'query', paramSources);
+            let effectiveBodyParams = (bodyParams && (typeof bodyParams === 'object')) ? bodyParams : Object.create(null);
             r.jsonResponse = function(data, code, excludeNoCacheHeaders) {
                 var headers = { 'Content-Type': 'application/json; charset=utf-8' };
                 if (! excludeNoCacheHeaders) {
@@ -642,15 +708,14 @@ var ApiSrv = function(opts) {
             }.bind(this);
             try {
                 let handlerEntry = this._matchRequestHandler(r.method, r.url);
-                const pathParams = handlerEntry ? handlerEntry.params : undefined;
-                if (pathParams) {
-                    r.pathParams = pathParams;
-                    assignParams(r.params, r.pathParams, 'path', paramSources);
-                }
                 let handler = handlerEntry ? handlerEntry.handler : undefined;
+                let handlerOptions = handlerEntry ? handlerEntry.options : undefined;
+                let pathParams = handlerEntry ? handlerEntry.params : Object.create(null);
                 if (!handler) {
                     if (this.callback) {
                         handler = this.callback;
+                        handlerOptions = undefined;
+                        pathParams = Object.create(null);
                     } else {
                         const hasOtherMethod = this._hasHandlerForOtherMethod(r.method, r.url);
                         if (hasOtherMethod) {
@@ -660,6 +725,64 @@ var ApiSrv = function(opts) {
                         }
                         return;
                     }
+                }
+                const ignoreUrlParams = handlerOptions && handlerOptions.ignoreUrlParams === true;
+                const runValidator = async (validator, value, description) => {
+                    try {
+                        const result = await validator(value);
+                        if (!result || typeof result !== 'object') {
+                            error(res, 500, `${description} validator must return an object.`);
+                            return { success: false };
+                        }
+                        return { success: true, value: result };
+                    } catch (err) {
+                        const detail = (err && err.message) ? err.message : `Invalid ${description}.`;
+                        error(res, 400, detail);
+                        return { success: false };
+                    }
+                };
+                if (handlerOptions && handlerOptions.pathParamsValidator) {
+                    const validation = await runValidator(handlerOptions.pathParamsValidator, pathParams, 'path parameters');
+                    if (!validation.success) {
+                        return;
+                    }
+                    pathParams = validation.value;
+                }
+                let urlParams;
+                if (!ignoreUrlParams) {
+                    urlParams = parseQuery(rawQueryString);
+                    if (handlerOptions && handlerOptions.urlParamsValidator) {
+                        const validation = await runValidator(handlerOptions.urlParamsValidator, urlParams, 'URL parameters');
+                        if (!validation.success) {
+                            return;
+                        }
+                        urlParams = validation.value;
+                    }
+                }
+                if (handlerOptions && handlerOptions.bodyParamsValidator) {
+                    const validation = await runValidator(handlerOptions.bodyParamsValidator, effectiveBodyParams, 'body parameters');
+                    if (!validation.success) {
+                        return;
+                    }
+                    effectiveBodyParams = validation.value;
+                }
+                r.bodyParams = effectiveBodyParams;
+                if (!ignoreUrlParams) {
+                    r.urlParams = (urlParams && (typeof urlParams === 'object')) ? urlParams : Object.create(null);
+                }
+                r.pathParams = (pathParams && (typeof pathParams === 'object')) ? pathParams : Object.create(null);
+                r.params = {};
+                assignParams(r.params, r.bodyParams, 'body', paramSources);
+                if (!ignoreUrlParams) {
+                    assignParams(r.params, r.urlParams, 'query', paramSources);
+                }
+                assignParams(r.params, r.pathParams, 'path', paramSources);
+                if (handlerOptions && handlerOptions.paramsValidator) {
+                    const validation = await runValidator(handlerOptions.paramsValidator, r.params, 'request parameters');
+                    if (!validation.success) {
+                        return;
+                    }
+                    r.params = validation.value;
                 }
                 const auth = await this.authCallback(r);
                 if (auth) {
@@ -757,13 +880,15 @@ var ApiSrv = function(opts) {
     this.server.listen(this.port, this.address);
 };
 
-ApiSrv.prototype.requestHandleAdd = function(method, path, handler) {
+ApiSrv.prototype.requestHandleAdd = function(method, path, handler, options) {
     const normalizedMethod = normalizeMethod(method);
     if (typeof handler !== 'function') {
         throw new Error(`Bad request handler callback for ${normalizedMethod} ${path}`);
     }
+    const normalizedOptions = normalizeHandlerOptions(normalizedMethod, path, options);
     const compiled = compilePathTemplate(path);
     compiled.handler = handler;
+    compiled.options = normalizedOptions;
     const store = getMethodStore(this._requestHandlers, normalizedMethod, true);
     if (compiled.isExact) {
         store.exact.set(compiled.template, compiled);
