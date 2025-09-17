@@ -15,6 +15,7 @@ var srv = new ApiSrv({ port: 8808,
                        callback: cb,
                        authCallback: authCb,
                        prettyPrintJsonResponses: true,
+                       rejectDangerousPaths: true,
                        bodyReadTimeoutMs: 5000,
                        maxBodySize: 1024 * 1024,
                        debug: true });
@@ -80,6 +81,11 @@ merged into `r.params`:
 Trailing slashes in handler definitions are significant: if a template ends
 with `/`, it matches only when the request path also ends with `/`. Templates
 without a trailing slash match both `/foo` and `/foo/`.
+
+For safety, `ApiSrv` rejects paths that contain empty segments (`//`) or dot
+segments (`/.` or `/..`). The rejection happens before authentication or
+handlers run and responds with HTTP 400. This check is enabled by default and
+can be disabled by constructing the server with `rejectDangerousPaths: false`.
 
 Values extracted from the path take precedence over query string parameters,
 which in turn override values parsed from the request body. The server prints a

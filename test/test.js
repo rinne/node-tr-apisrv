@@ -402,6 +402,57 @@ test('returns 405 when path matches other method and callback missing', async ()
     }
 });
 
+test('rejects dangerous paths by default', async () => {
+    const port = 12367;
+    let handled = 0;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => {
+            handled++;
+            r.jsonResponse({ ok: true });
+        }
+    });
+    try {
+        const cases = [
+            { path: '/foo//bar', message: 'Bad Request (empty path segment)' },
+            { path: '/foo/./bar', message: 'Bad Request (dangerous path segment ".")' },
+            { path: '/foo/../bar', message: 'Bad Request (dangerous path segment "..")' }
+        ];
+        for (const { path, message } of cases) {
+            const res = await httpRequest(port, { method: 'GET', path });
+            assert.strictEqual(res.status, 400);
+            assert.strictEqual(res.headers['content-type'], 'application/json; charset=utf-8');
+            const body = JSON.parse(res.data);
+            assert.strictEqual(body.code, 400);
+            assert.strictEqual(body.message, message);
+        }
+        assert.strictEqual(handled, 0);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('dangerous path rejection can be disabled', async () => {
+    const port = 12368;
+    let handled = 0;
+    const srv = new ApiSrv({
+        port,
+        rejectDangerousPaths: false,
+        callback: (r) => {
+            handled++;
+            r.jsonResponse({ url: r.url });
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/foo//bar' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { url: '/foo//bar' });
+        assert.strictEqual(handled, 1);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
 test('requestHandleAdd and requestHandleDelete modify handlers at runtime', async () => {
     const port = 12366;
     const srv = new ApiSrv({ port });

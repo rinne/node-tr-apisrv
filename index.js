@@ -25,6 +25,25 @@ const PARAM_SOURCE_LABELS = {
     query: 'query string',
     path: 'path template'
 };
+
+function detectDangerousPath(path) {
+    if (typeof path !== 'string') {
+        return 'invalid request path';
+    }
+    if (path === '/') {
+        return null;
+    }
+    if (path.includes('//')) {
+        return 'empty path segment';
+    }
+    if ((path === '/.') || path.endsWith('/.') || path.includes('/./')) {
+        return 'dangerous path segment "."';
+    }
+    if ((path === '/..') || path.endsWith('/..') || path.includes('/../')) {
+        return 'dangerous path segment ".."';
+    }
+    return null;
+}
 function parseQuery(str) {
     const params = Object.create(null);
     if (!str) {
@@ -322,6 +341,13 @@ var ApiSrv = function(opts) {
     }
     this.debug = opts.debug ? true : false;
     this.prettyPrintJsonResponses = opts.prettyPrintJsonResponses ? true : false;
+    if (opts.rejectDangerousPaths === undefined) {
+        this.rejectDangerousPaths = true;
+    } else if (typeof opts.rejectDangerousPaths === 'boolean') {
+        this.rejectDangerousPaths = opts.rejectDangerousPaths;
+    } else {
+        throw new Error(`Bad rejectDangerousPaths for ApiSrv constructor: ${opts.rejectDangerousPaths}`);
+    }
     if (Number.isSafeInteger(opts.port) && (opts.port > 0) && (opts.port < 65536)) {
         this.port = opts.port;
     } else {
@@ -575,6 +601,13 @@ var ApiSrv = function(opts) {
             default:
                 error(res, 405, 'Only GET, POST, PUT, and DELETE are allowed.');
                 return;
+            }
+            if (this.rejectDangerousPaths) {
+                const reason = detectDangerousPath(r.url);
+                if (reason) {
+                    error(res, 400, reason);
+                    return;
+                }
             }
             r.headers = req.headers;
             r.res = res;
