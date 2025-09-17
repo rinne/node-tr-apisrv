@@ -150,7 +150,7 @@ function compilePathTemplate(path) {
 }
 
 function matchCompiledPath(compiled, pathInfo) {
-    if (compiled.hasTrailingSlash !== pathInfo.hasTrailingSlash) {
+    if (compiled.hasTrailingSlash && !pathInfo.hasTrailingSlash) {
         return null;
     }
     if (pathInfo.segments.length < compiled.minSegments) {
@@ -284,9 +284,16 @@ function findMatchInStore(store, path) {
     if (!store) {
         return null;
     }
-    const exact = store.exact.get(path);
+    let exact = store.exact.get(path);
     if (exact) {
         return { handler: exact.handler, params: {} };
+    }
+    if ((path.length > 1) && path.endsWith('/')) {
+        const trimmed = path.slice(0, -1);
+        exact = store.exact.get(trimmed);
+        if (exact && !exact.hasTrailingSlash) {
+            return { handler: exact.handler, params: {} };
+        }
     }
     const pathInfo = describePath(path);
     for (const entry of store.dynamic.values()) {

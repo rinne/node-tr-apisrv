@@ -77,6 +77,10 @@ merged into `r.params`:
   components (for example `/{cmd}/[zap]/{bar}/{pup}`), it captures all segments
   required to allow the remainder of the template to match.
 
+Trailing slashes in handler definitions are significant: if a template ends
+with `/`, it matches only when the request path also ends with `/`. Templates
+without a trailing slash match both `/foo` and `/foo/`.
+
 Values extracted from the path take precedence over query string parameters,
 which in turn override values parsed from the request body. The server prints a
 warning whenever a later source overrides an earlier value.

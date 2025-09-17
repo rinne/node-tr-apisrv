@@ -160,6 +160,102 @@ test('requestHandlers support path templates', async (t) => {
     }
 });
 
+test('requestHandlers match trailing slash when template omits it', async () => {
+    const port = 12370;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/slashless': (r) => r.jsonResponse({ handled: 'slashless', path: r.url })
+            }
+        }
+    });
+    try {
+        let res = await httpRequest(port, { method: 'GET', path: '/slashless' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'slashless', path: '/slashless' });
+
+        res = await httpRequest(port, { method: 'GET', path: '/slashless/' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'slashless', path: '/slashless/' });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers require trailing slash when template includes it', async () => {
+    const port = 12371;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/needs-slash/': (r) => r.jsonResponse({ handled: 'needs-slash' })
+            }
+        }
+    });
+    try {
+        const withSlash = await httpRequest(port, { method: 'GET', path: '/needs-slash/' });
+        assert.strictEqual(withSlash.status, 200);
+        assert.deepStrictEqual(JSON.parse(withSlash.data), { handled: 'needs-slash' });
+
+        const withoutSlash = await httpRequest(port, { method: 'GET', path: '/needs-slash' });
+        assert.strictEqual(withoutSlash.status, 404);
+        const body = JSON.parse(withoutSlash.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('dynamic template without trailing slash matches both forms', async () => {
+    const port = 12372;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/user/{userId}': (r) => r.jsonResponse({ params: r.params })
+            }
+        }
+    });
+    try {
+        let res = await httpRequest(port, { method: 'GET', path: '/user/abc' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { params: { userId: 'abc' } });
+
+        res = await httpRequest(port, { method: 'GET', path: '/user/abc/' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { params: { userId: 'abc' } });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('dynamic template with trailing slash requires trailing slash in request', async () => {
+    const port = 12373;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/user/{userId}/': (r) => r.jsonResponse({ params: r.params })
+            }
+        }
+    });
+    try {
+        const withSlash = await httpRequest(port, { method: 'GET', path: '/user/abc/' });
+        assert.strictEqual(withSlash.status, 200);
+        assert.deepStrictEqual(JSON.parse(withSlash.data), { params: { userId: 'abc' } });
+
+        const withoutSlash = await httpRequest(port, { method: 'GET', path: '/user/abc' });
+        assert.strictEqual(withoutSlash.status, 404);
+        const body = JSON.parse(withoutSlash.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
 test('falls back to callback when requestHandlers do not match', async () => {
     const port = 12363;
     const srv = new ApiSrv({
