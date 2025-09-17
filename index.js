@@ -4,6 +4,22 @@ const http = require('http');
 const https = require('https');
 
 const SUPPORTED_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
+const HTTP_STATUS_MESSAGES = {
+    400: 'Bad Request',
+    401: 'Unauthorized',
+    403: 'Forbidden',
+    404: 'Not Found',
+    405: 'Method Not Allowed',
+    406: 'Not Acceptable',
+    408: 'Request Timeout',
+    409: 'Conflict',
+    413: 'Payload Too Large',
+    415: 'Unsupported Media Type',
+    429: 'Too Many Requests',
+    500: 'Internal Server Error',
+    501: 'Not Implemented',
+    503: 'Service Unavailable'
+};
 function parseQuery(str) {
     const params = Object.create(null);
     if (!str) {
@@ -490,12 +506,20 @@ var ApiSrv = function(opts) {
                                                             ('HTTP code ' +
                                                              code.toString())) },
                                       null, 2));
-            
+
             res.write("\n");
         } else {
-            res.writeHead(code, { 'Content-Type': 'text/plain' });
-            res.write(text);
-            res.write("\n");
+            const canonical = HTTP_STATUS_MESSAGES[code] || 'Error';
+            let detail = text ? text.trim() : '';
+            if (detail) {
+                detail = detail.replace(/\.+$/, '');
+            }
+            let message = canonical;
+            if (code === 400 && detail) {
+                message = `${canonical} (${detail})`;
+            }
+            res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.write(JSON.stringify({ code, message }));
         }
         res.end();
     }.bind(this);

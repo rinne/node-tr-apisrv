@@ -185,7 +185,9 @@ test('returns 404 when no handler matches and callback missing', async () => {
         const res = await httpRequest(port, { method: 'GET', path: '/bar' });
         assert.strictEqual(res.status, 404);
         assert.strictEqual(res.headers['content-type'], 'application/json; charset=utf-8');
-        assert.deepStrictEqual(JSON.parse(res.data), { message: 'Not Found', code: 404 });
+        const body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
     } finally {
         await srv.shutdown();
     }
@@ -210,7 +212,9 @@ test('returns 405 when path matches other method and callback missing', async ()
         });
         assert.strictEqual(res.status, 405);
         assert.strictEqual(res.headers['content-type'], 'application/json; charset=utf-8');
-        assert.deepStrictEqual(JSON.parse(res.data), { message: 'Method Not Allowed', code: 405 });
+        const body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 405);
+        assert.strictEqual(body.message, 'Method Not Allowed');
     } finally {
         await srv.shutdown();
     }
@@ -238,7 +242,9 @@ test('requestHandleAdd and requestHandleDelete modify handlers at runtime', asyn
         srv.requestHandleDelete('GET', '/dynamic');
         res = await httpRequest(port, { method: 'GET', path: '/dynamic' });
         assert.strictEqual(res.status, 405);
-        assert.deepStrictEqual(JSON.parse(res.data), { message: 'Method Not Allowed', code: 405 });
+        let body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 405);
+        assert.strictEqual(body.message, 'Method Not Allowed');
 
         srv.requestHandleDelete('*', '/dynamic');
         res = await httpRequest(port, {
@@ -248,7 +254,9 @@ test('requestHandleAdd and requestHandleDelete modify handlers at runtime', asyn
             body: JSON.stringify({})
         });
         assert.strictEqual(res.status, 404);
-        assert.deepStrictEqual(JSON.parse(res.data), { message: 'Not Found', code: 404 });
+        body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
     } finally {
         await srv.shutdown();
     }
@@ -316,7 +324,9 @@ test('body read timeout returns 408', async () => {
             req.write('123'); // intentionally never calling end to trigger timeout
         });
         assert.strictEqual(res.status, 408);
-        assert.strictEqual(res.data, 'Timeout occured while reading the request data.\n');
+        const body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 408);
+        assert.strictEqual(body.message, 'Request Timeout');
     } finally {
         await srv.shutdown();
     }
