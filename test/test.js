@@ -17,7 +17,7 @@ function httpRequest(port, { method = 'GET', path = '/', headers = {}, body } = 
         }, (res) => {
             let data = '';
             res.on('data', (d) => data += d);
-            res.on('end', () => resolve({ status: res.statusCode, data }));
+            res.on('end', () => resolve({ status: res.statusCode, data, headers: res.headers }));
         });
         req.on('error', reject);
         if (body) {
@@ -106,6 +106,149 @@ test('handles DELETE requests', async () => {
         const res = await httpRequest(port, { method: 'DELETE', path: '/?a=1' });
         assert.strictEqual(res.status, 200);
         assert.deepStrictEqual(JSON.parse(res.data), { method: 'DELETE', params: { a: '1' } });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers take precedence over callback', async () => {
+    const port = 12361;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => r.jsonResponse({ handled: 'callback' }),
+        requestHandlers: {
+            GET: {
+                '/': (r) => r.jsonResponse({ handled: 'requestHandlers' })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'requestHandlers' });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers support path templates', async () => {
+    const port = 12362;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => r.jsonResponse({ handled: 'callback' }),
+        requestHandlers: {
+            GET: {
+                '/user/{userId}': (r) => r.jsonResponse({ handled: 'requestHandlers', url: r.url })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/user/123?foo=bar' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'requestHandlers', url: '/user/123' });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('falls back to callback when requestHandlers do not match', async () => {
+    const port = 12363;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => r.jsonResponse({ handled: 'callback' }),
+        requestHandlers: {
+            GET: {
+                '/foo': (r) => r.jsonResponse({ handled: 'requestHandlers' })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'callback' });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('returns 404 when no handler matches and callback missing', async () => {
+    const port = 12364;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/foo': (r) => r.jsonResponse({ handled: 'requestHandlers' })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/bar' });
+        assert.strictEqual(res.status, 404);
+        assert.strictEqual(res.headers['content-type'], 'application/json; charset=utf-8');
+        assert.deepStrictEqual(JSON.parse(res.data), { message: 'Not Found', code: 404 });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('returns 405 when path matches other method and callback missing', async () => {
+    const port = 12365;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/foo': (r) => r.jsonResponse({ handled: 'requestHandlers' })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/foo',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        assert.strictEqual(res.status, 405);
+        assert.strictEqual(res.headers['content-type'], 'application/json; charset=utf-8');
+        assert.deepStrictEqual(JSON.parse(res.data), { message: 'Method Not Allowed', code: 405 });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandleAdd and requestHandleDelete modify handlers at runtime', async () => {
+    const port = 12366;
+    const srv = new ApiSrv({ port });
+    srv.requestHandleAdd('GET', '/dynamic', (r) => r.jsonResponse({ method: r.method }));
+    srv.requestHandleAdd('POST', '/dynamic', (r) => r.jsonResponse({ method: r.method }));
+    try {
+        let res = await httpRequest(port, { method: 'GET', path: '/dynamic' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { method: 'GET' });
+
+        res = await httpRequest(port, {
+            method: 'POST',
+            path: '/dynamic',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { method: 'POST' });
+
+        srv.requestHandleDelete('GET', '/dynamic');
+        res = await httpRequest(port, { method: 'GET', path: '/dynamic' });
+        assert.strictEqual(res.status, 405);
+        assert.deepStrictEqual(JSON.parse(res.data), { message: 'Method Not Allowed', code: 405 });
+
+        srv.requestHandleDelete('*', '/dynamic');
+        res = await httpRequest(port, {
+            method: 'POST',
+            path: '/dynamic',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        assert.strictEqual(res.status, 404);
+        assert.deepStrictEqual(JSON.parse(res.data), { message: 'Not Found', code: 404 });
     } finally {
         await srv.shutdown();
     }

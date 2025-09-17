@@ -2,6 +2,8 @@
 
 const http = require('http');
 const https = require('https');
+
+const SUPPORTED_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
 function parseQuery(str) {
     const params = Object.create(null);
     if (!str) {
@@ -44,6 +46,89 @@ function parseContentType(str) {
     return { type, params };
 }
 
+function isPlainObject(value) {
+    return !!value && (typeof value === 'object') && !Array.isArray(value);
+}
+
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function compilePathTemplate(path) {
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+        throw new Error(`Bad request handler path: ${path}`);
+    }
+    if (path === '/') {
+        return { isExact: true, template: path, regex: /^\/$/ };
+    }
+    const parts = path.split('/').slice(1); // skip leading empty string
+    let regex = '^';
+    let hasParams = false;
+    for (const part of parts) {
+        regex += '/';
+        if (part === '') {
+            // trailing slash
+            continue;
+        }
+        const paramMatch = part.match(/^\{([A-Za-z0-9_]+)\}$/);
+        if (paramMatch) {
+            hasParams = true;
+            regex += '([^/]+)';
+        } else {
+            regex += escapeRegex(part);
+        }
+    }
+    regex += '$';
+    return { isExact: !hasParams, template: path, regex: new RegExp(regex) };
+}
+
+function normalizeMethod(method) {
+    if (typeof method !== 'string') {
+        throw new Error(`Bad request handler method: ${method}`);
+    }
+    const upper = method.toUpperCase();
+    if (!SUPPORTED_METHODS.has(upper)) {
+        throw new Error(`Unsupported request handler method: ${method}`);
+    }
+    return upper;
+}
+
+function getMethodStore(map, method, createIfMissing) {
+    let store = map.get(method);
+    if (!store && createIfMissing) {
+        store = { exact: new Map(), dynamic: new Map() };
+        map.set(method, store);
+    }
+    return store;
+}
+
+function removeFromStore(store, path) {
+    let removed = false;
+    if (store.exact.delete(path)) {
+        removed = true;
+    }
+    if (store.dynamic.delete(path)) {
+        removed = true;
+    }
+    return removed;
+}
+
+function findMatchInStore(store, path) {
+    if (!store) {
+        return null;
+    }
+    const exact = store.exact.get(path);
+    if (exact) {
+        return exact;
+    }
+    for (const entry of store.dynamic.values()) {
+        if (entry.regex.test(path)) {
+            return entry;
+        }
+    }
+    return null;
+}
+
 var ApiSrv = function(opts) {
     var proto = http;
     var srvOpts = {};
@@ -71,10 +156,28 @@ var ApiSrv = function(opts) {
     } else if (opts.address) {
         throw new Error(`Bad address for ApiSrv constructor: ${opts.address}`);
     }
-    if (typeof(opts.callback) === 'function') {
-        this.callback = opts.callback;
+    if (opts.callback !== undefined) {
+        if (typeof(opts.callback) === 'function') {
+            this.callback = opts.callback;
+        } else {
+            throw new Error(`Bad callback for ApiSrv constructor: ${opts.callback}`);
+        }
     } else {
-        throw new Error(`Bad callback for ApiSrv constructor: ${opts.callback}`);
+        this.callback = undefined;
+    }
+    this._requestHandlers = new Map();
+    if (opts.requestHandlers !== undefined) {
+        if (!isPlainObject(opts.requestHandlers)) {
+            throw new Error('requestHandlers must be an object.');
+        }
+        for (const [method, handlers] of Object.entries(opts.requestHandlers)) {
+            if (!isPlainObject(handlers)) {
+                throw new Error(`Bad requestHandlers for method ${method}`);
+            }
+            for (const [path, handler] of Object.entries(handlers)) {
+                this.requestHandleAdd(method, path, handler);
+            }
+        }
     }
     if ((opts.authCallback !== undefined) && (opts.authCallback !== null)) {
         if (typeof(opts.authCallback) === 'function') {
@@ -315,9 +418,24 @@ var ApiSrv = function(opts) {
                 res.end();
             }.bind(this);
             try {
+                let handlerEntry = this._matchRequestHandler(r.method, r.url);
+                let handler = handlerEntry ? handlerEntry.handler : undefined;
+                if (!handler) {
+                    if (this.callback) {
+                        handler = this.callback;
+                    } else {
+                        const hasOtherMethod = this._hasHandlerForOtherMethod(r.method, r.url);
+                        if (hasOtherMethod) {
+                            jsonError(res, 405, 'Method Not Allowed');
+                        } else {
+                            jsonError(res, 404, 'Not Found');
+                        }
+                        return;
+                    }
+                }
                 const auth = await this.authCallback(r);
                 if (auth) {
-                    const ret = await this.callback(r);
+                    const ret = await handler.call(this, r);
                     if (ret !== false && this.debug) {
                         console.log('Request successfully processed (resource :' + r.url + ').');
                     }
@@ -381,6 +499,11 @@ var ApiSrv = function(opts) {
         }
         res.end();
     }.bind(this);
+    var jsonError = function(res, code, message) {
+        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.write(JSON.stringify({ message, code }));
+        res.end();
+    };
     this.server = proto.createServer(srvOpts, requestCb);
     if (this.upgradeCallback) {
         this.server.on('upgrade', upgradeCb);
@@ -396,6 +519,68 @@ var ApiSrv = function(opts) {
     this.server.headersTimeout = this.bodyReadTimeoutMs;
     this.server.requestTimeout = this.bodyReadTimeoutMs + 1;
     this.server.listen(this.port, this.address);
+};
+
+ApiSrv.prototype.requestHandleAdd = function(method, path, handler) {
+    const normalizedMethod = normalizeMethod(method);
+    if (typeof handler !== 'function') {
+        throw new Error(`Bad request handler callback for ${normalizedMethod} ${path}`);
+    }
+    const compiled = compilePathTemplate(path);
+    compiled.handler = handler;
+    const store = getMethodStore(this._requestHandlers, normalizedMethod, true);
+    if (compiled.isExact) {
+        store.exact.set(compiled.template, compiled);
+    } else {
+        store.dynamic.set(compiled.template, compiled);
+    }
+};
+
+ApiSrv.prototype.requestHandleDelete = function(method, path) {
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+        throw new Error(`Bad request handler path: ${path}`);
+    }
+    if (method === '*') {
+        let removed = false;
+        for (const [key, store] of this._requestHandlers.entries()) {
+            removed = removeFromStore(store, path) || removed;
+            if ((store.exact.size === 0) && (store.dynamic.size === 0)) {
+                this._requestHandlers.delete(key);
+            }
+        }
+        return removed;
+    }
+    const normalizedMethod = normalizeMethod(method);
+    const store = this._requestHandlers.get(normalizedMethod);
+    if (!store) {
+        return false;
+    }
+    const removed = removeFromStore(store, path);
+    if ((store.exact.size === 0) && (store.dynamic.size === 0)) {
+        this._requestHandlers.delete(normalizedMethod);
+    }
+    return removed;
+};
+
+ApiSrv.prototype._matchRequestHandler = function(method, path) {
+    const store = this._requestHandlers.get(method.toUpperCase());
+    if (!store) {
+        return null;
+    }
+    return findMatchInStore(store, path);
+};
+
+ApiSrv.prototype._hasHandlerForOtherMethod = function(method, path) {
+    const normalizedMethod = typeof method === 'string' ? method.toUpperCase() : method;
+    for (const [key, store] of this._requestHandlers.entries()) {
+        if (key === normalizedMethod) {
+            continue;
+        }
+        if (findMatchInStore(store, path)) {
+            return true;
+        }
+    }
+    return false;
 };
 
 ApiSrv.prototype.close = function() {

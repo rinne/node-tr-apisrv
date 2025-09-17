@@ -28,6 +28,44 @@ async function cb(r) {
 }
 ```
 
+Request handler configuration
+-----------------------------
+
+Specific handlers can be declared per HTTP method by supplying the
+`requestHandlers` option. Handlers defined this way take precedence over the
+top-level `callback`. If no handler matches a request and no fallback callback
+is provided, the server responds with a JSON error message (404 when the path is
+unknown, 405 when another method is registered for the same path).
+
+```javascript
+const srv = new ApiSrv({
+    port: 8808,
+    requestHandlers: {
+        GET: {
+            '/': rootCb,
+            '/user': userCb,
+            '/user/{userId}': userCb
+        },
+        POST: {
+            '/user/{userId}': updateUserCb
+        },
+        PUT: {
+            '/media/{mediaId}': uploadMediaCb
+        },
+        DELETE: {
+            '/user/{userId}': deleteUserCb
+        }
+    },
+    callback: fallbackCb // optional fallback when no requestHandlers match
+});
+
+// requestHandlers can be modified at runtime
+srv.requestHandleAdd('GET', '/foo/bar', fooBarCb);
+srv.requestHandleAdd('POST', '/foo/bar', fooBarCb);
+srv.requestHandleDelete('GET', '/foo/bar');
+srv.requestHandleDelete('*', '/foo/bar');
+```
+
 Examples
 ========
 
