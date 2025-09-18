@@ -1,198 +1,264 @@
-API Server
-==========
+# API Server
 
-This is a simple API server providing with ability to easily create
-JSON API servers. Accepts also calls in www-form-urlencoded form
-and treats them identically to flat JSON key-value structure.
+`tr-apisrv` is a lightweight JSON-oriented HTTP(S) server that focuses on fast
+configuration and predictable request handling rules. It supports declarative
+handler registration, request parameter validation, and pluggable
+authentication, making it easy to bootstrap small services or mock APIs.
 
-Requires Node.js 18 or newer.
+Requires **Node.js 18 or newer**.
 
+## Installation
+
+```bash
+npm install tr-apisrv
 ```
+
+## Quick start
+
+```javascript
 const ApiSrv = require('tr-apisrv');
 
-var srv = new ApiSrv({ port: 8808,
-                       address: '127.0.0.1',
-                       callback: cb,
-                       authCallback: authCb,
-                       prettyPrintJsonResponses: true,
-                       rejectDangerousPaths: true,
-                       bodyReadTimeoutMs: 5000,
-                       maxBodySize: 1024 * 1024,
-                       debug: true });
-
-async function authCb(r) {
-    return true;
+async function authenticate(request) {
+  // return false to reject the request
+  return request.headers.authorization === 'Bearer secret-token';
 }
 
-async function cb(r) {
-    r.jsonResponse(r, 200);
+async function listUsers(request) {
+  // Access individual parameter sources or the merged view
+  return request.jsonResponse({
+    params: request.params,
+    path: request.pathParams,
+    query: request.urlParams,
+    body: request.bodyParams
+  });
 }
-```
 
-Request handler configuration
------------------------------
+async function fallback(request) {
+  return request.jsonResponse({ message: 'Fallback handler invoked' });
+}
 
-Specific handlers can be declared per HTTP method by supplying the
-`requestHandlers` option. Handlers defined this way take precedence over the
-top-level `callback`. If no handler matches a request and no fallback callback
-is provided, the server responds with a JSON error message (404 when the path is
-unknown, 405 when another method is registered for the same path).
-
-```javascript
-const srv = new ApiSrv({
-    port: 8808,
-    requestHandlers: {
-        GET: {
-            '/': rootCb,
-            '/user': userCb,
-            '/user/{userId}': userCb
-        },
-        POST: {
-            '/user/{userId}': updateUserCb
-        },
-        PUT: {
-            '/media/{mediaId}': uploadMediaCb
-        },
-        DELETE: {
-            '/user/{userId}': deleteUserCb
+const server = new ApiSrv({
+  port: 8808,
+  address: '127.0.0.1',
+  authCallback: authenticate,
+  callback: fallback,
+  requestHandlers: {
+    GET: {
+      '/users': listUsers,
+      '/users/{userId}': listUsers,
+      '/files/[path]': {
+        callback: listUsers,
+        options: {
+          paramsValidator: (params) => ({ ...params, validated: true })
         }
-    },
-    callback: fallbackCb // optional fallback when no requestHandlers match
-});
-
-// requestHandlers can be modified at runtime
-srv.requestHandleAdd('GET', '/foo/bar', fooBarCb);
-srv.requestHandleAdd('POST', '/foo/bar', fooBarCb);
-srv.requestHandleDelete('GET', '/foo/bar');
-srv.requestHandleDelete('*', '/foo/bar');
-```
-
-Each handler entry can be either a callback function or an object with a
-`callback` property and an optional `options` object:
-
-```javascript
-const srv = new ApiSrv({
-    port: 8808,
-    requestHandlers: {
-        GET: {
-            '/user/{userId}': {
-                callback: getUser,
-                options: {
-                    pathParamsValidator: (params) => ({ userId: Number(params.userId) }),
-                    urlParamsValidator: async (query) => ({ page: Number(query.page ?? 1) }),
-                    paramsValidator: (params) => ({ ...params, validated: true })
-                }
-            }
-        }
+      }
     }
+  }
 });
 ```
 
-The supported handler options are:
+Requests are matched against `requestHandlers` first. When no handler matches,
+the optional top-level `callback` is used as a fallback. If neither resolves the
+request, `tr-apisrv` returns a canonical JSON error such as
+`{"code":404,"message":"Not Found"}`.
 
-* `pathParamsValidator`: validate and optionally transform `r.pathParams`.
-* `urlParamsValidator`: validate and optionally transform `r.urlParams`.
-* `bodyParamsValidator`: validate and optionally transform `r.bodyParams`.
-* `paramsValidator`: validate the merged `r.params` before the handler runs.
-* `ignoreUrlParams`: when `true`, the query string is ignored (`r.urlParams`
-  is left undefined and `urlParamsValidator` is not called).
+## Configuration reference
 
-Validator callbacks may be synchronous or asynchronous. They must return the
-new object to use in place of the original input and may throw to signal a bad
-request. The same `options` object can be supplied when adding handlers at
-runtime with `srv.requestHandleAdd(method, path, callback, options)`.
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `port` | number | **required** | TCP port to listen on (1–65535). |
+| `address` | string | `undefined` | Local address to bind. Leave undefined to listen on all interfaces. |
+| `key` / `cert` | string &#124; Buffer | `undefined` | Provide both to enable HTTPS. Supplying only one throws an error. |
+| `callback` | function | `undefined` | Fallback handler when no `requestHandlers` entry matches. |
+| `requestHandlers` | object | `undefined` | Declarative handler map, keyed by HTTP method. Details below. |
+| `authCallback` | function | `() => true` | Runs before the handler. Return truthy to continue; falsy rejects with 401. |
+| `upgradeCallback` | function | `undefined` | Optional `upgrade` (e.g. WebSocket) handler invoked after authentication. |
+| `prettyPrintJsonResponses` | boolean | `false` | When true, `jsonResponse` pretty-prints JSON with trailing newline. |
+| `rejectDangerousPaths` | boolean | `true` | Reject paths containing empty, `.` or `..` segments with HTTP 400. |
+| `bodyReadTimeoutMs` | number | `2000` | Milliseconds allowed to fully read the request body. Applies to upgrade as well. |
+| `maxBodySize` | number | `1048576` | Maximum allowed request body size in bytes. `0` allows only empty bodies. |
+| `debug` | boolean | `false` | Enables verbose logging for authentication failures and handler completion. |
 
-Path templates support dynamic components that are automatically decoded and
-merged into `r.params`:
+The server accepts only `GET`, `POST`, `PUT`, and `DELETE` requests. Other
+methods receive `405 Method Not Allowed`.
 
-* `{variable}` matches exactly one path segment and assigns the decoded value to
-  `r.params.variable` (for example `/user/{userId}` captures the identifier from
-  `/user/123`).
-* `[variable]` matches one or more consecutive segments and assigns an array of
-  decoded values to `r.params.variable`. When used between literal or `{}`
-  components (for example `/{cmd}/[zap]/{bar}/{pup}`), it captures all segments
-  required to allow the remainder of the template to match.
+## Request handler definitions
 
-Trailing slashes in handler definitions are significant: if a template ends
-with `/`, it matches only when the request path also ends with `/`. Templates
-without a trailing slash match both `/foo` and `/foo/`.
+Each HTTP method in `requestHandlers` maps path templates to either a callback
+function or an object of the shape `{ callback, options }`. Callbacks receive the
+request wrapper described in [Request object](#request-object).
 
-For safety, `ApiSrv` rejects paths that contain empty segments (`//`) or dot
-segments (`/.` or `/..`). The rejection happens before authentication or
-handlers run and responds with HTTP 400. This check is enabled by default and
-can be disabled by constructing the server with `rejectDangerousPaths: false`.
+### Resolution order
 
-Values extracted from the path take precedence over query string parameters,
-which in turn override values parsed from the request body. The server prints a
-warning whenever a later source overrides an earlier value. Individual sources
-are always available as `r.pathParams`, `r.urlParams`, and `r.bodyParams`
-respectively when handling a request.
+1. Match the request method and path against `requestHandlers`.
+2. If no handler matches and a top-level `callback` exists, it handles the request.
+3. When neither resolves the request, `tr-apisrv` returns a JSON error. A `405 Method Not Allowed`
+   response is used when another method is registered for the same path; otherwise
+   the response is `404 Not Found`.
 
-Examples
-========
+### Path templates
 
-GET handler with path parameter
--------------------------------
+Path templates determine which requests reach a handler and how parameters are
+extracted. All templates must start with `/`.
+Method keys in `requestHandlers` should be uppercase (`GET`, `POST`, `PUT`, `DELETE`).
+
+* **Literal segments** – `/users/list` matches exactly that path.
+* **Single-segment captures** – `{name}` captures one path component and makes it
+  available as a string. Example: `/users/{userId}` matches `/users/123` and sets
+  `request.pathParams.userId === '123'`.
+* **Multi-segment captures** – `[name]` captures one or more consecutive
+  segments and exposes them as an array of strings. Example: `/files/[path]`
+  matches `/files/a/b/c` and sets `request.pathParams.path === ['a','b','c']`.
+* Captures can be combined with literals, e.g. `/{cmd}/[args]/{tail}`. When
+  combined, `[args]` consumes all necessary segments so the remaining template
+  still matches.
+
+Trailing slashes are significant only when they appear in the template:
+
+* `/users/` matches `/users/` but not `/users`.
+* `/users` matches both `/users` and `/users/`.
+
+All captured values are URL-decoded. If decoding fails, the request is rejected
+with HTTP 400.
+
+### Handler options
+
+`options` fine-tune validation and query-string handling. Every option is
+optional; validators may be synchronous or asynchronous and must return the
+processed object. Throwing from a validator results in `400 Bad Request`. Returning
+anything other than an object causes a `500` response noting the validator must
+return an object.
+
+| Option | Description |
+| --- | --- |
+| `pathParamsValidator` | Validates and can transform `request.pathParams`. |
+| `urlParamsValidator` | Validates and can transform `request.urlParams`. Not called when `ignoreUrlParams` is `true`. |
+| `bodyParamsValidator` | Validates and can transform `request.bodyParams`. |
+| `paramsValidator` | Validates the merged `request.params` object. |
+| `ignoreUrlParams` | When `true`, the query string is ignored and `request.urlParams` is left `undefined`. |
+
+#### Validator example
 
 ```javascript
-async function cb(r) {
-    if (r.method === 'GET') {
-        // Match URL like /user/123 and capture the id
-        const m = r.url.match(/^\/user\/([^/]+)$/);
-        if (m) {
-            const id = m[1];
-            // r.urlParams contains parsed query string values
-            return r.jsonResponse({ id, params: r.params, query: r.urlParams });
-        }
-    }
+server.requestHandleAdd('GET', '/reports/{id}', fetchReport, {
+  pathParamsValidator: (params) => ({ id: Number(params.id) }),
+  urlParamsValidator: async (query) => ({ ...query, limit: Number(query.limit ?? 10) }),
+  paramsValidator: (params) => ({ ...params, filtered: true })
+});
+```
+
+Validators can perform type coercion or enforce business rules before the
+handler runs. Throwing inside any validator (including asynchronous ones)
+returns `400 Bad Request` with the error message appended in parentheses.
+
+Use `ignoreUrlParams` to opt out of query-string parsing entirely:
+
+```javascript
+server.requestHandleAdd('POST', '/import', importHandler, {
+  ignoreUrlParams: true,
+  bodyParamsValidator: validateImportPayload
+});
+```
+
+You can supply the same `options` when adding handlers at runtime with
+`requestHandleAdd(method, path, callback, options)`.
+
+### Runtime updates
+
+Handlers may be added, replaced, or removed without restarting the process:
+
+```javascript
+server.requestHandleAdd('GET', '/status', statusHandler);
+server.requestHandleAdd('POST', '/status', statusHandler, {
+  bodyParamsValidator: (body) => ({ ...body, updatedAt: Date.now() })
+});
+
+// Remove a single method
+server.requestHandleDelete('POST', '/status');
+
+// Remove all methods for a path
+server.requestHandleDelete('*', '/status');
+```
+
+## Request object
+
+Handlers receive an object that wraps the underlying `http.IncomingMessage` and
+`http.ServerResponse`.
+
+| Property | Description |
+| --- | --- |
+| `method` | Uppercase HTTP method. |
+| `url` | Request path without the query string. |
+| `req` | The raw `http.IncomingMessage`. |
+| `res` | The raw `http.ServerResponse`. |
+| `headers` | Request headers as received. |
+| `jsonResponse(data, statusCode?, excludeNoCacheHeaders?)` | Serializes JSON responses and sets default no-cache headers unless `excludeNoCacheHeaders` is `true`. |
+| `params` | Merged view of all parameters (body < query < path precedence). |
+| `pathParams` | Parameters parsed from the matched path template. |
+| `urlParams` | Parsed query parameters (unless suppressed). Arrays are preserved when the query repeats a key. |
+| `bodyParams` | Parsed request body, when provided. |
+
+All parameter collections are plain objects (or arrays for multi-segment
+captures). Parameters are merged in the following order: body → query string →
+path. Later sources override earlier ones in `request.params`. When this occurs,
+`tr-apisrv` logs a warning naming both sources.
+
+## Body parsing and limits
+
+* `POST` and `PUT` bodies must use `application/json` or
+  `application/x-www-form-urlencoded`. Other types result in
+  `400 Bad Request (POST or PUT body must be in JSON or www-form-urlencoded format.)`.
+* `GET` and `DELETE` requests must not include a body.
+* Bodies larger than `maxBodySize` yield `413 Payload Too Large`.
+* Slow clients that exceed `bodyReadTimeoutMs` cause `408 Request Timeout`.
+
+## Authentication and upgrades
+
+Before a handler runs, `authCallback` is awaited with the same request object.
+Returning a falsy value sends `401 Unauthorized` and skips the handler. The
+callback can mutate the request object (for example, attach user information).
+
+When `upgradeCallback` is provided, upgrade requests (e.g. WebSocket handshakes)
+create a similar request wrapper containing `req`, `s`, `head`, and the parsed
+parameters before invoking the callback.
+
+## Error handling
+
+Errors generated by `tr-apisrv` itself always use JSON with canonical HTTP
+status text in the `message` property, for example:
+
+```json
+{ "code": 404, "message": "Not Found" }
+```
+
+Additional context is appended in parentheses for 400-series validation errors,
+matching the format `"Bad Request (detailed reason)"`.
+
+Handlers remain free to craft any response, including non-JSON payloads, by using
+`request.res` directly. The convenience method `jsonResponse` is suitable for
+most use cases:
+
+```javascript
+async function ping(request) {
+  return request.jsonResponse({ ok: true });
 }
 ```
 
-POST handler with JSON body
----------------------------
+## Safety features
+
+When `rejectDangerousPaths` is `true` (the default), the server rejects paths
+containing empty segments (`//`) or dot segments (`/.`, `/..`) before running
+authentication or handlers. Disable the check only when you know that upstream
+routing has already sanitized paths:
 
 ```javascript
-async function cb(r) {
-    if (r.method === 'POST') {
-        // Match URL like /user/123 and capture the id
-        const m = r.url.match(/^\/user\/([^/]+)$/);
-        if (m) {
-            const id = m[1];
-            // Body is already parsed into r.params and r.bodyParams
-            return r.jsonResponse({ id, received: r.params, body: r.bodyParams });
-        }
-    }
-}
+const srv = new ApiSrv({
+  port: 8808,
+  rejectDangerousPaths: false,
+  callback: handler
+});
 ```
 
-Non‑JSON response
------------------
+## License
 
-Sometimes a handler may need to send a plain text or other custom response.
-The underlying `http.ServerResponse` is available as `r.res`:
-
-```javascript
-async function cb(r) {
-    if (r.url === '/plaintext') {
-        r.res.writeHead(200, { 'Content-Type': 'text/plain' });
-        r.res.end('ok');
-        return;
-    }
-    // default JSON response
-    return r.jsonResponse({ ok: true });
-}
-```
-
-`maxBodySize` limits the size of accepted request bodies in bytes. Requests exceeding
-the limit are terminated with HTTP status 413. The default limit is 1 MiB.
-
-Author
-======
-
-Timo J. Rinne <tri@iki.fi>
-
-
-License
-=======
-
-MIT License
+MIT
