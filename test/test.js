@@ -17,7 +17,7 @@ function httpRequest(port, { method = 'GET', path = '/', headers = {}, body } = 
         }, (res) => {
             let data = '';
             res.on('data', (d) => data += d);
-            res.on('end', () => resolve({ status: res.statusCode, data }));
+            res.on('end', () => resolve({ status: res.statusCode, data, headers: res.headers }));
         });
         req.on('error', reject);
         if (body) {
@@ -45,12 +45,24 @@ test('handles GET requests', async () => {
     const port = 12350;
     const srv = new ApiSrv({
         port,
-        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+        callback: (r) => r.jsonResponse({
+            method: r.method,
+            params: r.params,
+            pathParams: r.pathParams,
+            urlParams: r.urlParams,
+            bodyParams: r.bodyParams
+        })
     });
     try {
         const res = await httpRequest(port, { method: 'GET', path: '/?a=1' });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { method: 'GET', params: { a: '1' } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            method: 'GET',
+            params: { a: '1' },
+            pathParams: {},
+            urlParams: { a: '1' },
+            bodyParams: {}
+        });
     } finally {
         await srv.shutdown();
     }
@@ -60,7 +72,13 @@ test('handles POST requests', async () => {
     const port = 12351;
     const srv = new ApiSrv({
         port,
-        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+        callback: (r) => r.jsonResponse({
+            method: r.method,
+            params: r.params,
+            pathParams: r.pathParams,
+            urlParams: r.urlParams,
+            bodyParams: r.bodyParams
+        })
     });
     try {
         const res = await httpRequest(port, {
@@ -70,7 +88,13 @@ test('handles POST requests', async () => {
             body: JSON.stringify({ a: 1 })
         });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { method: 'POST', params: { a: 1 } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            method: 'POST',
+            params: { a: 1 },
+            pathParams: {},
+            urlParams: {},
+            bodyParams: { a: 1 }
+        });
     } finally {
         await srv.shutdown();
     }
@@ -80,7 +104,13 @@ test('handles PUT requests', async () => {
     const port = 12352;
     const srv = new ApiSrv({
         port,
-        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+        callback: (r) => r.jsonResponse({
+            method: r.method,
+            params: r.params,
+            pathParams: r.pathParams,
+            urlParams: r.urlParams,
+            bodyParams: r.bodyParams
+        })
     });
     try {
         const res = await httpRequest(port, {
@@ -90,7 +120,13 @@ test('handles PUT requests', async () => {
             body: 'a=1'
         });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { method: 'PUT', params: { a: '1' } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            method: 'PUT',
+            params: { a: '1' },
+            pathParams: {},
+            urlParams: {},
+            bodyParams: { a: '1' }
+        });
     } finally {
         await srv.shutdown();
     }
@@ -100,12 +136,916 @@ test('handles DELETE requests', async () => {
     const port = 12353;
     const srv = new ApiSrv({
         port,
-        callback: (r) => r.jsonResponse({ method: r.method, params: r.params })
+        callback: (r) => r.jsonResponse({
+            method: r.method,
+            params: r.params,
+            pathParams: r.pathParams,
+            urlParams: r.urlParams,
+            bodyParams: r.bodyParams
+        })
     });
     try {
         const res = await httpRequest(port, { method: 'DELETE', path: '/?a=1' });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(JSON.parse(res.data), { method: 'DELETE', params: { a: '1' } });
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            method: 'DELETE',
+            params: { a: '1' },
+            pathParams: {},
+            urlParams: { a: '1' },
+            bodyParams: {}
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('handlers can respond with JSON errors via errorResponse', async () => {
+    const port = 12354;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            POST: {
+                '/items': (r) => r.errorResponse(400, 'Input data is too complex')
+            },
+            GET: {
+                '/items': (r) => r.errorResponse(404)
+            }
+        }
+    });
+    try {
+        const invalid = await httpRequest(port, {
+            method: 'POST',
+            path: '/items',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}'
+        });
+        assert.strictEqual(invalid.status, 400);
+        const invalidBody = JSON.parse(invalid.data);
+        assert.strictEqual(invalidBody.code, 400);
+        assert.strictEqual(invalidBody.message, 'Bad Request (Input data is too complex)');
+
+        const missing = await httpRequest(port, { method: 'GET', path: '/items' });
+        assert.strictEqual(missing.status, 404);
+        const missingBody = JSON.parse(missing.data);
+        assert.strictEqual(missingBody.code, 404);
+        assert.strictEqual(missingBody.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers take precedence over callback', async () => {
+    const port = 12361;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => r.jsonResponse({ handled: 'callback' }),
+        requestHandlers: {
+            GET: {
+                '/': (r) => r.jsonResponse({ handled: 'requestHandlers' })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'requestHandlers' });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers support path templates', async (t) => {
+    const port = 12362;
+    const warnings = [];
+    const warnMock = t.mock.method(console, 'warn', (...args) => warnings.push(args.join(' ')));
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => r.jsonResponse({ handled: 'callback' }),
+        requestHandlers: {
+            GET: {
+                '/user/{userId}': (r) => r.jsonResponse({
+                    handled: 'requestHandlers',
+                    params: r.params,
+                    pathParams: r.pathParams,
+                    urlParams: r.urlParams,
+                    bodyParams: r.bodyParams
+                })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/user/123?foo=bar&userId=query' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            handled: 'requestHandlers',
+            params: { foo: 'bar', userId: '123' },
+            pathParams: { userId: '123' },
+            urlParams: { foo: 'bar', userId: 'query' },
+            bodyParams: {}
+        });
+        assert.strictEqual(warnings.length, 1);
+        assert.match(warnings[0], /userId/);
+        assert.match(warnings[0], /query string/);
+    } finally {
+        t.mock.restoreAll();
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers match trailing slash when template omits it', async () => {
+    const port = 12370;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/slashless': (r) => r.jsonResponse({ handled: 'slashless', path: r.url })
+            }
+        }
+    });
+    try {
+        let res = await httpRequest(port, { method: 'GET', path: '/slashless' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'slashless', path: '/slashless' });
+
+        res = await httpRequest(port, { method: 'GET', path: '/slashless/' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'slashless', path: '/slashless/' });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers require trailing slash when template includes it', async () => {
+    const port = 12371;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/needs-slash/': (r) => r.jsonResponse({ handled: 'needs-slash' })
+            }
+        }
+    });
+    try {
+        const withSlash = await httpRequest(port, { method: 'GET', path: '/needs-slash/' });
+        assert.strictEqual(withSlash.status, 200);
+        assert.deepStrictEqual(JSON.parse(withSlash.data), { handled: 'needs-slash' });
+
+        const withoutSlash = await httpRequest(port, { method: 'GET', path: '/needs-slash' });
+        assert.strictEqual(withoutSlash.status, 404);
+        const body = JSON.parse(withoutSlash.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('dynamic template without trailing slash matches both forms', async () => {
+    const port = 12372;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/user/{userId}': (r) => r.jsonResponse({
+                    params: r.params,
+                    pathParams: r.pathParams,
+                    urlParams: r.urlParams,
+                    bodyParams: r.bodyParams
+                })
+            }
+        }
+    });
+    try {
+        let res = await httpRequest(port, { method: 'GET', path: '/user/abc' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { userId: 'abc' },
+            pathParams: { userId: 'abc' },
+            urlParams: {},
+            bodyParams: {}
+        });
+
+        res = await httpRequest(port, { method: 'GET', path: '/user/abc/' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { userId: 'abc' },
+            pathParams: { userId: 'abc' },
+            urlParams: {},
+            bodyParams: {}
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('dynamic template with trailing slash requires trailing slash in request', async () => {
+    const port = 12373;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/user/{userId}/': (r) => r.jsonResponse({ params: r.params })
+            }
+        }
+    });
+    try {
+        const withSlash = await httpRequest(port, { method: 'GET', path: '/user/abc/' });
+        assert.strictEqual(withSlash.status, 200);
+        assert.deepStrictEqual(JSON.parse(withSlash.data), { params: { userId: 'abc' } });
+
+        const withoutSlash = await httpRequest(port, { method: 'GET', path: '/user/abc' });
+        assert.strictEqual(withoutSlash.status, 404);
+        const body = JSON.parse(withoutSlash.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers reject invalid path parameter names', () => {
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12394,
+            requestHandlers: {
+                GET: {
+                    '/users/{1bad}': () => {}
+                }
+            }
+        });
+    }, /Invalid path parameter name/);
+
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12395,
+            requestHandlers: {
+                GET: {
+                    '/files/[bad-name]': () => {}
+                }
+            }
+        });
+    }, /Invalid path parameter name|Invalid path parameter segment/);
+});
+
+test('requestHandlers reject invalid array constraints', () => {
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12396,
+            requestHandlers: {
+                GET: {
+                    '/files/[segments:0]': () => {}
+                }
+            }
+        });
+    }, /Invalid minimum length/);
+
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12397,
+            requestHandlers: {
+                GET: {
+                    '/files/[segments:5:2]': () => {}
+                }
+            }
+        });
+    }, /Invalid length range/);
+
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12398,
+            requestHandlers: {
+                GET: {
+                    '/files/[segments:4:four]': () => {}
+                }
+            }
+        });
+    }, /Invalid path parameter segment/);
+});
+
+test('falls back to callback when requestHandlers do not match', async () => {
+    const port = 12363;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => r.jsonResponse({ handled: 'callback' }),
+        requestHandlers: {
+            GET: {
+                '/foo': (r) => r.jsonResponse({ handled: 'requestHandlers' })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { handled: 'callback' });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('request handler definition objects apply validators', async () => {
+    const port = 12376;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/validate/{userId}': {
+                    callback: (r) => r.jsonResponse({
+                        params: r.params,
+                        pathParams: r.pathParams,
+                        urlParams: r.urlParams
+                    }),
+                    options: {
+                        pathParamsValidator: (pathParams) => ({ userId: Number(pathParams.userId) }),
+                        urlParamsValidator: async (urlParams) => ({ limit: Number(urlParams.limit) }),
+                        paramsValidator: async (params) => ({ ...params, validated: true })
+                    }
+                }
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/validate/42?limit=5' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { limit: 5, userId: 42, validated: true },
+            pathParams: { userId: 42 },
+            urlParams: { limit: 5 }
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers capture array segments with [variable]', async () => {
+    const port = 12367;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[pathParts]': (r) => r.jsonResponse({ params: r.params, pathParams: r.pathParams })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/files/foo/bar/baz' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { pathParts: ['foo', 'bar', 'baz'] },
+            pathParams: { pathParts: ['foo', 'bar', 'baz'] }
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandlers capture [variable] segments in the middle of a template', async () => {
+    const port = 12368;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/{cmd}/[zap]/{bar}/{pup}': (r) => r.jsonResponse({ params: r.params, pathParams: r.pathParams })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/do/one/two/three/four' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: {
+                cmd: 'do',
+                zap: ['one', 'two'],
+                bar: 'three',
+                pup: 'four'
+            },
+            pathParams: {
+                cmd: 'do',
+                zap: ['one', 'two'],
+                bar: 'three',
+                pup: 'four'
+            }
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('array path parameter enforces default length constraints', async () => {
+    const port = 12390;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[segments]': (r) => r.jsonResponse({ pathParams: r.pathParams })
+            }
+        }
+    });
+    const exactly32 = Array.from({ length: 32 }, (_, i) => `part${i}`);
+    const tooMany = Array.from({ length: 33 }, (_, i) => `part${i}`);
+    try {
+        const within = await httpRequest(port, { method: 'GET', path: `/files/${exactly32.join('/')}` });
+        assert.strictEqual(within.status, 200);
+        const parsedWithin = JSON.parse(within.data);
+        assert.deepStrictEqual(parsedWithin.pathParams.segments, exactly32);
+
+        const overLimit = await httpRequest(port, { method: 'GET', path: `/files/${tooMany.join('/')}` });
+        assert.strictEqual(overLimit.status, 404);
+        const body = JSON.parse(overLimit.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('array path parameter enforces exact length constraint', async () => {
+    const port = 12391;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[segments:4]': (r) => r.jsonResponse({ pathParams: r.pathParams })
+            }
+        }
+    });
+    const exactlyFour = Array.from({ length: 4 }, (_, i) => `p${i}`);
+    const three = exactlyFour.slice(0, 3);
+    const five = [...exactlyFour, 'extra'];
+    try {
+        const exact = await httpRequest(port, { method: 'GET', path: `/files/${exactlyFour.join('/')}` });
+        assert.strictEqual(exact.status, 200);
+        const parsedExact = JSON.parse(exact.data);
+        assert.deepStrictEqual(parsedExact.pathParams.segments, exactlyFour);
+
+        const tooFew = await httpRequest(port, { method: 'GET', path: `/files/${three.join('/')}` });
+        assert.strictEqual(tooFew.status, 404);
+        const bodyFew = JSON.parse(tooFew.data);
+        assert.strictEqual(bodyFew.code, 404);
+        assert.strictEqual(bodyFew.message, 'Not Found');
+
+        const tooMany = await httpRequest(port, { method: 'GET', path: `/files/${five.join('/')}` });
+        assert.strictEqual(tooMany.status, 404);
+        const bodyMany = JSON.parse(tooMany.data);
+        assert.strictEqual(bodyMany.code, 404);
+        assert.strictEqual(bodyMany.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('array path parameter enforces min and max constraints', async () => {
+    const port = 12392;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[segments:2:4]': (r) => r.jsonResponse({ pathParams: r.pathParams })
+            }
+        }
+    });
+    const two = ['a', 'b'];
+    const four = ['a', 'b', 'c', 'd'];
+    try {
+        const minOk = await httpRequest(port, { method: 'GET', path: `/files/${two.join('/')}` });
+        assert.strictEqual(minOk.status, 200);
+        const parsedMin = JSON.parse(minOk.data);
+        assert.deepStrictEqual(parsedMin.pathParams.segments, two);
+
+        const maxOk = await httpRequest(port, { method: 'GET', path: `/files/${four.join('/')}` });
+        assert.strictEqual(maxOk.status, 200);
+        const parsedMax = JSON.parse(maxOk.data);
+        assert.deepStrictEqual(parsedMax.pathParams.segments, four);
+
+        const tooFew = await httpRequest(port, { method: 'GET', path: '/files/a' });
+        assert.strictEqual(tooFew.status, 404);
+        const bodyFew = JSON.parse(tooFew.data);
+        assert.strictEqual(bodyFew.code, 404);
+        assert.strictEqual(bodyFew.message, 'Not Found');
+
+        const tooMany = await httpRequest(port, { method: 'GET', path: '/files/a/b/c/d/e' });
+        assert.strictEqual(tooMany.status, 404);
+        const bodyMany = JSON.parse(tooMany.data);
+        assert.strictEqual(bodyMany.code, 404);
+        assert.strictEqual(bodyMany.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('array path parameter allows raising the default maximum', async () => {
+    const port = 12393;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[segments:10:50]': (r) => r.jsonResponse({ pathParams: r.pathParams })
+            }
+        }
+    });
+    const ten = Array.from({ length: 10 }, (_, i) => `s${i}`);
+    const forty = Array.from({ length: 40 }, (_, i) => `s${i}`);
+    const nine = ten.slice(0, 9);
+    const fiftyOne = Array.from({ length: 51 }, (_, i) => `s${i}`);
+    try {
+        const minOk = await httpRequest(port, { method: 'GET', path: `/files/${ten.join('/')}` });
+        assert.strictEqual(minOk.status, 200);
+        const parsedMin = JSON.parse(minOk.data);
+        assert.deepStrictEqual(parsedMin.pathParams.segments, ten);
+
+        const extended = await httpRequest(port, { method: 'GET', path: `/files/${forty.join('/')}` });
+        assert.strictEqual(extended.status, 200);
+        const parsedExtended = JSON.parse(extended.data);
+        assert.deepStrictEqual(parsedExtended.pathParams.segments, forty);
+
+        const belowMin = await httpRequest(port, { method: 'GET', path: `/files/${nine.join('/')}` });
+        assert.strictEqual(belowMin.status, 404);
+        const bodyLow = JSON.parse(belowMin.data);
+        assert.strictEqual(bodyLow.code, 404);
+        assert.strictEqual(bodyLow.message, 'Not Found');
+
+        const aboveMax = await httpRequest(port, { method: 'GET', path: `/files/${fiftyOne.join('/')}` });
+        assert.strictEqual(aboveMax.status, 404);
+        const bodyHigh = JSON.parse(aboveMax.data);
+        assert.strictEqual(bodyHigh.code, 404);
+        assert.strictEqual(bodyHigh.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('ignoreUrlParams prevents query parsing', async () => {
+    const port = 12377;
+    let urlValidatorCalled = false;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/items/{itemId}': {
+                    callback: (r) => r.jsonResponse({
+                        params: r.params,
+                        pathParams: r.pathParams,
+                        hasUrlParams: Object.prototype.hasOwnProperty.call(r, 'urlParams')
+                    }),
+                    options: {
+                        ignoreUrlParams: true,
+                        urlParamsValidator: () => {
+                            urlValidatorCalled = true;
+                            return {};
+                        }
+                    }
+                }
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/items/abc?foo=bar' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { itemId: 'abc' },
+            pathParams: { itemId: 'abc' },
+            hasUrlParams: false
+        });
+        assert.strictEqual(urlValidatorCalled, false);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('path parameters override body parameters with warning', async (t) => {
+    const port = 12369;
+    const warnings = [];
+    const warnMock = t.mock.method(console, 'warn', (...args) => warnings.push(args.join(' ')));
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            POST: {
+                '/user/{userId}': (r) => r.jsonResponse({
+                    params: r.params,
+                    pathParams: r.pathParams,
+                    urlParams: r.urlParams,
+                    bodyParams: r.bodyParams
+                })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/user/123',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: 'fromBody', name: 'alice' })
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { userId: '123', name: 'alice' },
+            pathParams: { userId: '123' },
+            urlParams: {},
+            bodyParams: { userId: 'fromBody', name: 'alice' }
+        });
+        assert.strictEqual(warnings.length, 1);
+        assert.match(warnings[0], /userId/);
+        assert.match(warnings[0], /request body/);
+    } finally {
+        t.mock.restoreAll();
+        await srv.shutdown();
+    }
+});
+
+test('returns 404 when no handler matches and callback missing', async () => {
+    const port = 12364;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/foo': (r) => r.jsonResponse({ handled: 'requestHandlers' })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/bar' });
+        assert.strictEqual(res.status, 404);
+        assert.strictEqual(res.headers['content-type'], 'application/json; charset=utf-8');
+        const body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('returns 405 when path matches other method and callback missing', async () => {
+    const port = 12365;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/foo': (r) => r.jsonResponse({ handled: 'requestHandlers' })
+            }
+        }
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/foo',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        assert.strictEqual(res.status, 405);
+        assert.strictEqual(res.headers['content-type'], 'application/json; charset=utf-8');
+        const body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 405);
+        assert.strictEqual(body.message, 'Method Not Allowed');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('rejects dangerous paths by default', async () => {
+    const port = 12367;
+    let handled = 0;
+    const srv = new ApiSrv({
+        port,
+        callback: (r) => {
+            handled++;
+            r.jsonResponse({ ok: true });
+        }
+    });
+    try {
+        const cases = [
+            { path: '/foo//bar', message: 'Bad Request (empty path segment)' },
+            { path: '/foo/./bar', message: 'Bad Request (dangerous path segment ".")' },
+            { path: '/foo/../bar', message: 'Bad Request (dangerous path segment "..")' }
+        ];
+        for (const { path, message } of cases) {
+            const res = await httpRequest(port, { method: 'GET', path });
+            assert.strictEqual(res.status, 400);
+            assert.strictEqual(res.headers['content-type'], 'application/json; charset=utf-8');
+            const body = JSON.parse(res.data);
+            assert.strictEqual(body.code, 400);
+            assert.strictEqual(body.message, message);
+        }
+        assert.strictEqual(handled, 0);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('dangerous path rejection can be disabled', async () => {
+    const port = 12368;
+    let handled = 0;
+    const srv = new ApiSrv({
+        port,
+        rejectDangerousPaths: false,
+        callback: (r) => {
+            handled++;
+            r.jsonResponse({ url: r.url });
+        }
+    });
+    try {
+        const res = await httpRequest(port, { method: 'GET', path: '/foo//bar' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { url: '/foo//bar' });
+        assert.strictEqual(handled, 1);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandleAdd and requestHandleDelete modify handlers at runtime', async () => {
+    const port = 12366;
+    const srv = new ApiSrv({ port });
+    srv.requestHandleAdd('GET', '/dynamic', (r) => r.jsonResponse({ method: r.method }));
+    srv.requestHandleAdd('POST', '/dynamic', (r) => r.jsonResponse({ method: r.method }));
+    try {
+        let res = await httpRequest(port, { method: 'GET', path: '/dynamic' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { method: 'GET' });
+
+        res = await httpRequest(port, {
+            method: 'POST',
+            path: '/dynamic',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { method: 'POST' });
+
+        srv.requestHandleDelete('GET', '/dynamic');
+        res = await httpRequest(port, { method: 'GET', path: '/dynamic' });
+        assert.strictEqual(res.status, 405);
+        let body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 405);
+        assert.strictEqual(body.message, 'Method Not Allowed');
+
+        srv.requestHandleDelete('*', '/dynamic');
+        res = await httpRequest(port, {
+            method: 'POST',
+            path: '/dynamic',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        assert.strictEqual(res.status, 404);
+        body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandleAdd supports validator options', async () => {
+    const port = 12378;
+    const srv = new ApiSrv({ port });
+    srv.requestHandleAdd('POST', '/items/{itemId}', (r) => r.jsonResponse({
+        params: r.params,
+        pathParams: r.pathParams,
+        bodyParams: r.bodyParams,
+        urlParams: r.urlParams
+    }), {
+        pathParamsValidator: (pathParams) => ({ itemId: Number(pathParams.itemId) }),
+        bodyParamsValidator: async (bodyParams) => ({
+            name: bodyParams.name.toUpperCase(),
+            count: Number(bodyParams.count)
+        }),
+        paramsValidator: (params) => ({ ...params, validated: true })
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/items/5',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'foo', count: '3' })
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), {
+            params: { name: 'FOO', count: 3, itemId: 5, validated: true },
+            pathParams: { itemId: 5 },
+            bodyParams: { name: 'FOO', count: 3 },
+            urlParams: {}
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandleAdd enforces path template constraints', async () => {
+    const port = 12399;
+    const srv = new ApiSrv({ port });
+    try {
+        assert.throws(() => {
+            srv.requestHandleAdd('GET', '/bad/{1foo}', () => {});
+        }, /Invalid path parameter name/);
+
+        assert.throws(() => {
+            srv.requestHandleAdd('GET', '/bad/[parts:0]', () => {});
+        }, /Invalid minimum length/);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('authentication runs before parameter parsing', async () => {
+    const port = 12379;
+    let authSnapshot;
+    let handlerSnapshot;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            POST: {
+                '/items/{itemId}': {
+                    callback: (r) => {
+                        const normalizedPath = r.pathParams === undefined ? undefined : { ...r.pathParams };
+                        const normalizedUrl = r.urlParams === undefined ? undefined : { ...r.urlParams };
+                        handlerSnapshot = {
+                            bodyParams: r.bodyParams,
+                            pathParams: normalizedPath,
+                            urlParams: normalizedUrl,
+                            params: r.params
+                        };
+                        r.jsonResponse({ ok: true });
+                    }
+                }
+            }
+        },
+        authCallback: (r) => {
+            authSnapshot = {
+                bodyParams: r.bodyParams,
+                pathParams: r.pathParams,
+                urlParams: r.urlParams,
+                params: r.params
+            };
+            return true;
+        }
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/items/10',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'foo' })
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(authSnapshot, {
+            bodyParams: undefined,
+            pathParams: undefined,
+            urlParams: undefined,
+            params: undefined
+        });
+        assert.deepStrictEqual(handlerSnapshot, {
+            bodyParams: { name: 'foo' },
+            pathParams: { itemId: '10' },
+            urlParams: {},
+            params: { name: 'foo', itemId: '10' }
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('authentication failure skips parameter parsing', async () => {
+    const port = 12380;
+    let authCalls = 0;
+    let authSnapshot;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            POST: {
+                '/items': {
+                    callback: () => {
+                        throw new Error('handler must not be invoked');
+                    }
+                }
+            }
+        },
+        authCallback: (r) => {
+            authCalls++;
+            authSnapshot = {
+                bodyParams: r.bodyParams,
+                pathParams: r.pathParams,
+                urlParams: r.urlParams,
+                params: r.params
+            };
+            r.res.writeHead(401, { 'Content-Type': 'text/plain' });
+            r.res.end('unauthorized');
+            return false;
+        }
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/items',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{'
+        });
+        assert.strictEqual(res.status, 401);
+        assert.strictEqual(res.data, 'unauthorized');
+        assert.strictEqual(authCalls, 1);
+        assert.deepStrictEqual(authSnapshot, {
+            bodyParams: undefined,
+            pathParams: undefined,
+            urlParams: undefined,
+            params: undefined
+        });
     } finally {
         await srv.shutdown();
     }
@@ -173,7 +1113,9 @@ test('body read timeout returns 408', async () => {
             req.write('123'); // intentionally never calling end to trigger timeout
         });
         assert.strictEqual(res.status, 408);
-        assert.strictEqual(res.data, 'Timeout occured while reading the request data.\n');
+        const body = JSON.parse(res.data);
+        assert.strictEqual(body.code, 408);
+        assert.strictEqual(body.message, 'Request Timeout');
     } finally {
         await srv.shutdown();
     }
