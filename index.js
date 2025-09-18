@@ -32,6 +32,9 @@ const HANDLER_OPTION_KEYS = new Set([
     'bodyParamsValidator',
     'ignoreUrlParams'
 ]);
+const PARAM_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const DEFAULT_SPLAT_MIN = 1;
+const DEFAULT_SPLAT_MAX = 32;
 
 function detectDangerousPath(path) {
     if (typeof path !== 'string') {
@@ -196,13 +199,59 @@ function compilePathTemplate(path) {
             continue;
         }
         let match;
-        if ((match = part.match(/^\{([A-Za-z0-9_]+)\}$/))) {
+        if ((match = part.match(/^\{([A-Za-z_][A-Za-z0-9_]*)\}$/))) {
             hasDynamic = true;
-            segments.push({ type: 'param', name: match[1] });
-        } else if ((match = part.match(/^\[([A-Za-z0-9_]+)\]$/))) {
+            const name = match[1];
+            if (!PARAM_NAME_RE.test(name)) {
+                throw new Error(`Invalid path parameter name "${name}" in ${path}`);
+            }
+            segments.push({ type: 'param', name });
+        } else if ((match = part.match(/^\[([A-Za-z_][A-Za-z0-9_]*)(?::(\d+)(?::(\d+))?)?\]$/))) {
             hasDynamic = true;
             hasSplat = true;
-            segments.push({ type: 'splat', name: match[1] });
+            const name = match[1];
+            if (!PARAM_NAME_RE.test(name)) {
+                throw new Error(`Invalid path parameter name "${name}" in ${path}`);
+            }
+            let minItems = DEFAULT_SPLAT_MIN;
+            let maxItems = DEFAULT_SPLAT_MAX;
+            if (match[2] !== undefined) {
+                const first = Number.parseInt(match[2], 10);
+                if (!Number.isSafeInteger(first)) {
+                    throw new Error(`Invalid array length constraint for "${name}" in ${path}`);
+                }
+                if (match[3] === undefined) {
+                    minItems = first;
+                    maxItems = first;
+                } else {
+                    const second = Number.parseInt(match[3], 10);
+                    if (!Number.isSafeInteger(second)) {
+                        throw new Error(`Invalid array length constraint for "${name}" in ${path}`);
+                    }
+                    minItems = first;
+                    maxItems = second;
+                }
+            }
+            if (minItems < 1) {
+                throw new Error(`Invalid minimum length for "${name}" in ${path}`);
+            }
+            if (maxItems < minItems) {
+                throw new Error(`Invalid length range for "${name}" in ${path}`);
+            }
+            segments.push({ type: 'splat', name, minItems, maxItems });
+        } else if (part.startsWith('{') && part.endsWith('}')) {
+            const name = part.slice(1, -1);
+            if (!PARAM_NAME_RE.test(name)) {
+                throw new Error(`Invalid path parameter name "${name}" in ${path}`);
+            }
+            throw new Error(`Invalid path parameter segment "${part}" in ${path}`);
+        } else if (part.startsWith('[') && part.endsWith(']')) {
+            const inner = part.slice(1, -1);
+            const name = inner.split(':', 1)[0];
+            if (!PARAM_NAME_RE.test(name)) {
+                throw new Error(`Invalid path parameter name "${name}" in ${path}`);
+            }
+            throw new Error(`Invalid path parameter segment "${part}" in ${path}`);
         } else {
             segments.push({ type: 'literal', value: part });
         }
@@ -210,7 +259,9 @@ function compilePathTemplate(path) {
     const minSegmentsFrom = new Array(segments.length + 1);
     minSegmentsFrom[segments.length] = 0;
     for (let i = segments.length - 1; i >= 0; i--) {
-        minSegmentsFrom[i] = minSegmentsFrom[i + 1] + 1;
+        const segment = segments[i];
+        const minCount = segment.type === 'splat' ? segment.minItems : 1;
+        minSegmentsFrom[i] = minSegmentsFrom[i + 1] + minCount;
     }
     return {
         isExact: !hasDynamic,
@@ -271,12 +322,20 @@ function matchCompiledPath(compiled, pathInfo) {
                 return null;
             }
             const minRemaining = compiled.minSegmentsFrom[tIndex + 1];
-            const maxLen = reqSegments.length - minRemaining;
-            if (maxLen < 1) {
+            const minLen = segment.minItems;
+            const available = reqSegments.length - rIndex - minRemaining;
+            if (available < minLen) {
                 return null;
             }
-            for (let len = 1; len <= maxLen; len++) {
+            const maxLen = Math.min(segment.maxItems, available);
+            if (maxLen < minLen) {
+                return null;
+            }
+            for (let len = minLen; len <= maxLen; len++) {
                 const slice = reqSegments.slice(rIndex, rIndex + len);
+                if (slice.length !== len) {
+                    break;
+                }
                 const decodedSlice = [];
                 let failed = false;
                 for (const part of slice) {

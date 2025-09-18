@@ -363,6 +363,65 @@ test('dynamic template with trailing slash requires trailing slash in request', 
     }
 });
 
+test('requestHandlers reject invalid path parameter names', () => {
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12394,
+            requestHandlers: {
+                GET: {
+                    '/users/{1bad}': () => {}
+                }
+            }
+        });
+    }, /Invalid path parameter name/);
+
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12395,
+            requestHandlers: {
+                GET: {
+                    '/files/[bad-name]': () => {}
+                }
+            }
+        });
+    }, /Invalid path parameter name|Invalid path parameter segment/);
+});
+
+test('requestHandlers reject invalid array constraints', () => {
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12396,
+            requestHandlers: {
+                GET: {
+                    '/files/[segments:0]': () => {}
+                }
+            }
+        });
+    }, /Invalid minimum length/);
+
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12397,
+            requestHandlers: {
+                GET: {
+                    '/files/[segments:5:2]': () => {}
+                }
+            }
+        });
+    }, /Invalid length range/);
+
+    assert.throws(() => {
+        new ApiSrv({
+            port: 12398,
+            requestHandlers: {
+                GET: {
+                    '/files/[segments:4:four]': () => {}
+                }
+            }
+        });
+    }, /Invalid path parameter segment/);
+});
+
 test('falls back to callback when requestHandlers do not match', async () => {
     const port = 12363;
     const srv = new ApiSrv({
@@ -466,6 +525,149 @@ test('requestHandlers capture [variable] segments in the middle of a template', 
                 pup: 'four'
             }
         });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('array path parameter enforces default length constraints', async () => {
+    const port = 12390;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[segments]': (r) => r.jsonResponse({ pathParams: r.pathParams })
+            }
+        }
+    });
+    const exactly32 = Array.from({ length: 32 }, (_, i) => `part${i}`);
+    const tooMany = Array.from({ length: 33 }, (_, i) => `part${i}`);
+    try {
+        const within = await httpRequest(port, { method: 'GET', path: `/files/${exactly32.join('/')}` });
+        assert.strictEqual(within.status, 200);
+        const parsedWithin = JSON.parse(within.data);
+        assert.deepStrictEqual(parsedWithin.pathParams.segments, exactly32);
+
+        const overLimit = await httpRequest(port, { method: 'GET', path: `/files/${tooMany.join('/')}` });
+        assert.strictEqual(overLimit.status, 404);
+        const body = JSON.parse(overLimit.data);
+        assert.strictEqual(body.code, 404);
+        assert.strictEqual(body.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('array path parameter enforces exact length constraint', async () => {
+    const port = 12391;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[segments:4]': (r) => r.jsonResponse({ pathParams: r.pathParams })
+            }
+        }
+    });
+    const exactlyFour = Array.from({ length: 4 }, (_, i) => `p${i}`);
+    const three = exactlyFour.slice(0, 3);
+    const five = [...exactlyFour, 'extra'];
+    try {
+        const exact = await httpRequest(port, { method: 'GET', path: `/files/${exactlyFour.join('/')}` });
+        assert.strictEqual(exact.status, 200);
+        const parsedExact = JSON.parse(exact.data);
+        assert.deepStrictEqual(parsedExact.pathParams.segments, exactlyFour);
+
+        const tooFew = await httpRequest(port, { method: 'GET', path: `/files/${three.join('/')}` });
+        assert.strictEqual(tooFew.status, 404);
+        const bodyFew = JSON.parse(tooFew.data);
+        assert.strictEqual(bodyFew.code, 404);
+        assert.strictEqual(bodyFew.message, 'Not Found');
+
+        const tooMany = await httpRequest(port, { method: 'GET', path: `/files/${five.join('/')}` });
+        assert.strictEqual(tooMany.status, 404);
+        const bodyMany = JSON.parse(tooMany.data);
+        assert.strictEqual(bodyMany.code, 404);
+        assert.strictEqual(bodyMany.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('array path parameter enforces min and max constraints', async () => {
+    const port = 12392;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[segments:2:4]': (r) => r.jsonResponse({ pathParams: r.pathParams })
+            }
+        }
+    });
+    const two = ['a', 'b'];
+    const four = ['a', 'b', 'c', 'd'];
+    try {
+        const minOk = await httpRequest(port, { method: 'GET', path: `/files/${two.join('/')}` });
+        assert.strictEqual(minOk.status, 200);
+        const parsedMin = JSON.parse(minOk.data);
+        assert.deepStrictEqual(parsedMin.pathParams.segments, two);
+
+        const maxOk = await httpRequest(port, { method: 'GET', path: `/files/${four.join('/')}` });
+        assert.strictEqual(maxOk.status, 200);
+        const parsedMax = JSON.parse(maxOk.data);
+        assert.deepStrictEqual(parsedMax.pathParams.segments, four);
+
+        const tooFew = await httpRequest(port, { method: 'GET', path: '/files/a' });
+        assert.strictEqual(tooFew.status, 404);
+        const bodyFew = JSON.parse(tooFew.data);
+        assert.strictEqual(bodyFew.code, 404);
+        assert.strictEqual(bodyFew.message, 'Not Found');
+
+        const tooMany = await httpRequest(port, { method: 'GET', path: '/files/a/b/c/d/e' });
+        assert.strictEqual(tooMany.status, 404);
+        const bodyMany = JSON.parse(tooMany.data);
+        assert.strictEqual(bodyMany.code, 404);
+        assert.strictEqual(bodyMany.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('array path parameter allows raising the default maximum', async () => {
+    const port = 12393;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            GET: {
+                '/files/[segments:10:50]': (r) => r.jsonResponse({ pathParams: r.pathParams })
+            }
+        }
+    });
+    const ten = Array.from({ length: 10 }, (_, i) => `s${i}`);
+    const forty = Array.from({ length: 40 }, (_, i) => `s${i}`);
+    const nine = ten.slice(0, 9);
+    const fiftyOne = Array.from({ length: 51 }, (_, i) => `s${i}`);
+    try {
+        const minOk = await httpRequest(port, { method: 'GET', path: `/files/${ten.join('/')}` });
+        assert.strictEqual(minOk.status, 200);
+        const parsedMin = JSON.parse(minOk.data);
+        assert.deepStrictEqual(parsedMin.pathParams.segments, ten);
+
+        const extended = await httpRequest(port, { method: 'GET', path: `/files/${forty.join('/')}` });
+        assert.strictEqual(extended.status, 200);
+        const parsedExtended = JSON.parse(extended.data);
+        assert.deepStrictEqual(parsedExtended.pathParams.segments, forty);
+
+        const belowMin = await httpRequest(port, { method: 'GET', path: `/files/${nine.join('/')}` });
+        assert.strictEqual(belowMin.status, 404);
+        const bodyLow = JSON.parse(belowMin.data);
+        assert.strictEqual(bodyLow.code, 404);
+        assert.strictEqual(bodyLow.message, 'Not Found');
+
+        const aboveMax = await httpRequest(port, { method: 'GET', path: `/files/${fiftyOne.join('/')}` });
+        assert.strictEqual(aboveMax.status, 404);
+        const bodyHigh = JSON.parse(aboveMax.data);
+        assert.strictEqual(bodyHigh.code, 404);
+        assert.strictEqual(bodyHigh.message, 'Not Found');
     } finally {
         await srv.shutdown();
     }
@@ -721,6 +923,22 @@ test('requestHandleAdd supports validator options', async () => {
             bodyParams: { name: 'FOO', count: 3 },
             urlParams: {}
         });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('requestHandleAdd enforces path template constraints', async () => {
+    const port = 12399;
+    const srv = new ApiSrv({ port });
+    try {
+        assert.throws(() => {
+            srv.requestHandleAdd('GET', '/bad/{1foo}', () => {});
+        }, /Invalid path parameter name/);
+
+        assert.throws(() => {
+            srv.requestHandleAdd('GET', '/bad/[parts:0]', () => {});
+        }, /Invalid minimum length/);
     } finally {
         await srv.shutdown();
     }

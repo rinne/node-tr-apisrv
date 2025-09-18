@@ -104,11 +104,20 @@ Method keys in `requestHandlers` should be uppercase (`GET`, `POST`, `PUT`, `DEL
 
 * **Literal segments** – `/users/list` matches exactly that path.
 * **Single-segment captures** – `{name}` captures one path component and makes it
-  available as a string. Example: `/users/{userId}` matches `/users/123` and sets
-  `request.pathParams.userId === '123'`.
+  available as a string. Capture names must match the regular expression
+  `/^[A-Za-z_][A-Za-z0-9_]*$/`. Example: `/users/{userId}` matches `/users/123`
+  and sets `request.pathParams.userId === '123'`.
 * **Multi-segment captures** – `[name]` captures one or more consecutive
-  segments and exposes them as an array of strings. Example: `/files/[path]`
-  matches `/files/a/b/c` and sets `request.pathParams.path === ['a','b','c']`.
+  segments and exposes them as an array of strings. Names follow the same
+  pattern restriction as `{name}`. Arrays match 1–32 segments by default, and
+  you can provide explicit bounds with `[name:min]` (exact length) or
+  `[name:min:max]` (inclusive range). Examples:
+  * `/example/path/[MyArray]` matches 1 to 32 segments.
+  * `/example/path/[MyArray:4]` matches exactly four segments.
+  * `/example/path/[MyArray:2:12]` matches two to twelve segments.
+  * `/example/path/[MyArray:10:50]` matches ten to fifty segments, allowing
+    larger maxima than the default. The upper bound is always finite—either the
+    default 32 or the explicit maximum you declare.
 * Captures can be combined with literals, e.g. `/{cmd}/[args]/{tail}`. When
   combined, `[args]` consumes all necessary segments so the remaining template
   still matches.
