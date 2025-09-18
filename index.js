@@ -498,23 +498,28 @@ class ApiSrv {
     const upgradeCb = async (req, s, head) => {
         var m, r = {};
         r.method = req.method;
+        let rawQueryString;
         if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
             r.url = m[1];
-            const queryOnlyParams = parseQuery(m[2].toString('utf8'));
-            r.urlParams = queryOnlyParams;
-            r.params = queryOnlyParams;
+            rawQueryString = m[2].toString('utf8');
         } else {
             r.url = req.url;
-            r.urlParams = Object.create(null);
-            r.params = Object.create(null);
+            rawQueryString = undefined;
         }
-        r.bodyParams = Object.create(null);
-        r.pathParams = Object.create(null);
+        r.bodyParams = undefined;
+        r.urlParams = undefined;
+        r.pathParams = undefined;
+        r.params = undefined;
         r.headers = req.headers;
         r.req = req;
         try {
             const ret = await this.authCallback(r);
             if (ret) {
+                const queryOnlyParams = parseQuery(rawQueryString);
+                r.urlParams = queryOnlyParams;
+                r.params = queryOnlyParams;
+                r.bodyParams = Object.create(null);
+                r.pathParams = Object.create(null);
                 r.head = head;
                 r.s = s;
                 const cbRet = await opts.upgradeCallback(r);
@@ -619,7 +624,6 @@ class ApiSrv {
                     return;
                 }
             }
-            let bodyParams;
             let rawQueryString;
             switch (req.method) {
             case 'POST':
@@ -630,34 +634,7 @@ class ApiSrv {
                 }
                 r.url = req.url;
                 r.method = req.method;
-                switch (contentType) {
-                case 'application/x-www-form-urlencoded':
-                case 'application/www-form-urlencoded':
-                    bodyParams = parseQuery(body.toString('utf8'));
-                    break;
-                case 'application/json':
-                    if (contentTypeArgs && contentTypeArgs.charset && (contentTypeArgs.charset !== 'utf-8')) {
-                        error(res, 400, 'Bad charset for JSON content type.');
-                        return;
-                    }
-                    try {
-                        bodyParams = JSON.parse(body.toString('utf8'));
-                    } catch(e) {
-                        bodyParams = undefined;
-                    }
-                    if (! (bodyParams && (typeof(bodyParams) === 'object'))) {
-                        error(res, 400, 'Unable to parse JSON query parameters.');
-                        return;
-                    }
-                    break;
-                case 'multipart/form-data':
-                    // We know this, but only wankers would use it here.
-                    // RFC6749 anyways says that application/x-www-form-urlencoded
-                    // is the "correct" way to go.
-                default:
-                    error(res, 400, 'POST or PUT body must be in JSON or www-form-urlencoded format.');
-                    return;
-                }
+                rawQueryString = undefined;
                 break;
             case 'GET':
             case 'DELETE':
@@ -688,8 +665,11 @@ class ApiSrv {
             }
             r.headers = req.headers;
             r.res = res;
-            const paramSources = new Map();
-            let effectiveBodyParams = (bodyParams && (typeof bodyParams === 'object')) ? bodyParams : Object.create(null);
+            r.req = req;
+            r.bodyParams = undefined;
+            r.urlParams = undefined;
+            r.pathParams = undefined;
+            r.params = undefined;
             r.jsonResponse = (data, code, excludeNoCacheHeaders) => {
                 var headers = { 'Content-Type': 'application/json; charset=utf-8' };
                 if (! excludeNoCacheHeaders) {
@@ -727,66 +707,102 @@ class ApiSrv {
                         return;
                     }
                 }
-                const ignoreUrlParams = handlerOptions && handlerOptions.ignoreUrlParams === true;
-                const runValidator = async (validator, value, description) => {
-                    try {
-                        const result = await validator(value);
-                        if (!result || typeof result !== 'object') {
-                            error(res, 500, `${description} validator must return an object.`);
+                const auth = await this.authCallback(r);
+                if (auth) {
+                    const paramSources = new Map();
+                    const ignoreUrlParams = handlerOptions && handlerOptions.ignoreUrlParams === true;
+                    const runValidator = async (validator, value, description) => {
+                        try {
+                            const result = await validator(value);
+                            if (!result || typeof result !== 'object') {
+                                error(res, 500, `${description} validator must return an object.`);
+                                return { success: false };
+                            }
+                            return { success: true, value: result };
+                        } catch (err) {
+                            const detail = (err && err.message) ? err.message : `Invalid ${description}.`;
+                            error(res, 400, detail);
                             return { success: false };
                         }
-                        return { success: true, value: result };
-                    } catch (err) {
-                        const detail = (err && err.message) ? err.message : `Invalid ${description}.`;
-                        error(res, 400, detail);
-                        return { success: false };
-                    }
-                };
-                if (handlerOptions && handlerOptions.pathParamsValidator) {
-                    const validation = await runValidator(handlerOptions.pathParamsValidator, pathParams, 'path parameters');
-                    if (!validation.success) {
-                        return;
-                    }
-                    pathParams = validation.value;
-                }
-                let urlParams;
-                if (!ignoreUrlParams) {
-                    urlParams = parseQuery(rawQueryString);
-                    if (handlerOptions && handlerOptions.urlParamsValidator) {
-                        const validation = await runValidator(handlerOptions.urlParamsValidator, urlParams, 'URL parameters');
+                    };
+                    let normalizedPathParams = (pathParams && (typeof pathParams === 'object')) ? pathParams : Object.create(null);
+                    if (handlerOptions && handlerOptions.pathParamsValidator) {
+                        const validation = await runValidator(handlerOptions.pathParamsValidator, normalizedPathParams, 'path parameters');
                         if (!validation.success) {
                             return;
                         }
-                        urlParams = validation.value;
+                        normalizedPathParams = validation.value;
                     }
-                }
-                if (handlerOptions && handlerOptions.bodyParamsValidator) {
-                    const validation = await runValidator(handlerOptions.bodyParamsValidator, effectiveBodyParams, 'body parameters');
-                    if (!validation.success) {
-                        return;
+                    let urlParams;
+                    if (!ignoreUrlParams) {
+                        urlParams = parseQuery(rawQueryString);
+                        if (handlerOptions && handlerOptions.urlParamsValidator) {
+                            const validation = await runValidator(handlerOptions.urlParamsValidator, urlParams, 'URL parameters');
+                            if (!validation.success) {
+                                return;
+                            }
+                            urlParams = validation.value;
+                        }
                     }
-                    effectiveBodyParams = validation.value;
-                }
-                r.bodyParams = effectiveBodyParams;
-                if (!ignoreUrlParams) {
-                    r.urlParams = (urlParams && (typeof urlParams === 'object')) ? urlParams : Object.create(null);
-                }
-                r.pathParams = (pathParams && (typeof pathParams === 'object')) ? pathParams : Object.create(null);
-                r.params = {};
-                assignParams(r.params, r.bodyParams, 'body', paramSources);
-                if (!ignoreUrlParams) {
-                    assignParams(r.params, r.urlParams, 'query', paramSources);
-                }
-                assignParams(r.params, r.pathParams, 'path', paramSources);
-                if (handlerOptions && handlerOptions.paramsValidator) {
-                    const validation = await runValidator(handlerOptions.paramsValidator, r.params, 'request parameters');
-                    if (!validation.success) {
-                        return;
+                    let bodyParamsObject;
+                    if (req.method === 'POST' || req.method === 'PUT') {
+                        switch (contentType) {
+                        case 'application/x-www-form-urlencoded':
+                        case 'application/www-form-urlencoded':
+                            bodyParamsObject = parseQuery(body.toString('utf8'));
+                            break;
+                        case 'application/json':
+                            if (contentTypeArgs && contentTypeArgs.charset && (contentTypeArgs.charset !== 'utf-8')) {
+                                error(res, 400, 'Bad charset for JSON content type.');
+                                return;
+                            }
+                            try {
+                                bodyParamsObject = JSON.parse(body.toString('utf8'));
+                            } catch(e) {
+                                bodyParamsObject = undefined;
+                            }
+                            if (!(bodyParamsObject && (typeof bodyParamsObject === 'object'))) {
+                                error(res, 400, 'Unable to parse JSON query parameters.');
+                                return;
+                            }
+                            break;
+                        case 'multipart/form-data':
+                        default:
+                            error(res, 400, 'POST or PUT body must be in JSON or www-form-urlencoded format.');
+                            return;
+                        }
                     }
-                    r.params = validation.value;
-                }
-                const auth = await this.authCallback(r);
-                if (auth) {
+                    let effectiveBodyParams = (bodyParamsObject && (typeof bodyParamsObject === 'object')) ? bodyParamsObject : Object.create(null);
+                    if (handlerOptions && handlerOptions.bodyParamsValidator) {
+                        const validation = await runValidator(handlerOptions.bodyParamsValidator, effectiveBodyParams, 'body parameters');
+                        if (!validation.success) {
+                            return;
+                        }
+                        effectiveBodyParams = validation.value;
+                    }
+                    const mergedParams = {};
+                    assignParams(mergedParams, effectiveBodyParams, 'body', paramSources);
+                    let safeUrlParams;
+                    if (!ignoreUrlParams) {
+                        safeUrlParams = (urlParams && (typeof urlParams === 'object')) ? urlParams : Object.create(null);
+                        assignParams(mergedParams, safeUrlParams, 'query', paramSources);
+                        r.urlParams = safeUrlParams;
+                    }
+                    assignParams(mergedParams, (normalizedPathParams && (typeof normalizedPathParams === 'object')) ? normalizedPathParams : Object.create(null), 'path', paramSources);
+                    if (handlerOptions && handlerOptions.paramsValidator) {
+                        const validation = await runValidator(handlerOptions.paramsValidator, mergedParams, 'request parameters');
+                        if (!validation.success) {
+                            return;
+                        }
+                        r.params = validation.value;
+                    } else {
+                        r.params = mergedParams;
+                    }
+                    r.bodyParams = effectiveBodyParams;
+                    r.pathParams = (normalizedPathParams && (typeof normalizedPathParams === 'object')) ? normalizedPathParams : Object.create(null);
+                    if (ignoreUrlParams) {
+                        delete r.urlParams;
+                    }
                     const ret = await handler.call(this, r);
                     if (ret !== false && this.debug) {
                         console.log('Request successfully processed (resource :' + r.url + ').');

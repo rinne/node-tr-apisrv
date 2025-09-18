@@ -71,7 +71,7 @@ request, `tr-apisrv` returns a canonical JSON error such as
 | `key` / `cert` | string &#124; Buffer | `undefined` | Provide both to enable HTTPS. Supplying only one throws an error. |
 | `callback` | function | `undefined` | Fallback handler when no `requestHandlers` entry matches. |
 | `requestHandlers` | object | `undefined` | Declarative handler map, keyed by HTTP method. Details below. |
-| `authCallback` | function | `() => true` | Runs before the handler. Return truthy to continue; falsy rejects with 401. |
+| `authCallback` | function | `() => true` | Runs before any parameters are parsed. Return truthy to continue; falsy lets you reject (e.g. send 401). Parameter fields are `undefined` during this callback. |
 | `upgradeCallback` | function | `undefined` | Optional `upgrade` (e.g. WebSocket) handler invoked after authentication. |
 | `prettyPrintJsonResponses` | boolean | `false` | When true, `jsonResponse` pretty-prints JSON with trailing newline. |
 | `rejectDangerousPaths` | boolean | `true` | Reject paths containing empty, `.` or `..` segments with HTTP 400. |
@@ -198,6 +198,11 @@ Handlers receive an object that wraps the underlying `http.IncomingMessage` and
 | `urlParams` | Parsed query parameters (unless suppressed). Arrays are preserved when the query repeats a key. |
 | `bodyParams` | Parsed request body, when provided. |
 
+During `authCallback`, the server has not parsed any parameters. At that point
+`request.params`, `request.pathParams`, `request.urlParams`, and
+`request.bodyParams` are all `undefined`. They are populated only after
+authentication succeeds and before the handler runs.
+
 All parameter collections are plain objects (or arrays for multi-segment
 captures). Parameters are merged in the following order: body → query string →
 path. Later sources override earlier ones in `request.params`. When this occurs,
@@ -214,13 +219,18 @@ path. Later sources override earlier ones in `request.params`. When this occurs,
 
 ## Authentication and upgrades
 
-Before a handler runs, `authCallback` is awaited with the same request object.
-Returning a falsy value sends `401 Unauthorized` and skips the handler. The
-callback can mutate the request object (for example, attach user information).
+Before a handler runs, `authCallback` is awaited with the request object. During
+this phase the parameter properties remain `undefined`; they are parsed only
+after authentication succeeds. Returning a falsy value lets you send your own
+response (for example, `401 Unauthorized`) and skips the handler. The callback
+can still mutate the request object, such as attaching user information for the
+handler to consume.
 
 When `upgradeCallback` is provided, upgrade requests (e.g. WebSocket handshakes)
-create a similar request wrapper containing `req`, `s`, `head`, and the parsed
-parameters before invoking the callback.
+follow the same sequence: authentication runs first with the parameter
+properties unset. Once the callback allows the upgrade, query parameters are
+parsed and provided alongside `req`, `s`, and `head` before invoking the upgrade
+handler.
 
 ## Error handling
 

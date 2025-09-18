@@ -691,6 +691,113 @@ test('requestHandleAdd supports validator options', async () => {
     }
 });
 
+test('authentication runs before parameter parsing', async () => {
+    const port = 12379;
+    let authSnapshot;
+    let handlerSnapshot;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            POST: {
+                '/items/{itemId}': {
+                    callback: (r) => {
+                        const normalizedPath = r.pathParams === undefined ? undefined : { ...r.pathParams };
+                        const normalizedUrl = r.urlParams === undefined ? undefined : { ...r.urlParams };
+                        handlerSnapshot = {
+                            bodyParams: r.bodyParams,
+                            pathParams: normalizedPath,
+                            urlParams: normalizedUrl,
+                            params: r.params
+                        };
+                        r.jsonResponse({ ok: true });
+                    }
+                }
+            }
+        },
+        authCallback: (r) => {
+            authSnapshot = {
+                bodyParams: r.bodyParams,
+                pathParams: r.pathParams,
+                urlParams: r.urlParams,
+                params: r.params
+            };
+            return true;
+        }
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/items/10',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'foo' })
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(authSnapshot, {
+            bodyParams: undefined,
+            pathParams: undefined,
+            urlParams: undefined,
+            params: undefined
+        });
+        assert.deepStrictEqual(handlerSnapshot, {
+            bodyParams: { name: 'foo' },
+            pathParams: { itemId: '10' },
+            urlParams: {},
+            params: { name: 'foo', itemId: '10' }
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('authentication failure skips parameter parsing', async () => {
+    const port = 12380;
+    let authCalls = 0;
+    let authSnapshot;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            POST: {
+                '/items': {
+                    callback: () => {
+                        throw new Error('handler must not be invoked');
+                    }
+                }
+            }
+        },
+        authCallback: (r) => {
+            authCalls++;
+            authSnapshot = {
+                bodyParams: r.bodyParams,
+                pathParams: r.pathParams,
+                urlParams: r.urlParams,
+                params: r.params
+            };
+            r.res.writeHead(401, { 'Content-Type': 'text/plain' });
+            r.res.end('unauthorized');
+            return false;
+        }
+    });
+    try {
+        const res = await httpRequest(port, {
+            method: 'POST',
+            path: '/items',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{'
+        });
+        assert.strictEqual(res.status, 401);
+        assert.strictEqual(res.data, 'unauthorized');
+        assert.strictEqual(authCalls, 1);
+        assert.deepStrictEqual(authSnapshot, {
+            bodyParams: undefined,
+            pathParams: undefined,
+            urlParams: undefined,
+            params: undefined
+        });
+    } finally {
+        await srv.shutdown();
+    }
+});
+
 test('authentication callback controls access', async () => {
     const port = 12354;
     let handled = 0;
