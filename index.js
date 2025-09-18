@@ -687,6 +687,9 @@ class ApiSrv {
                 }
                 res.end();
             };
+            r.errorResponse = (code, detail) => {
+                return error(res, code, detail);
+            };
             try {
                 let handlerEntry = this.#matchRequestHandler(r.method, r.url);
                 let handler = handlerEntry ? handlerEntry.handler : undefined;

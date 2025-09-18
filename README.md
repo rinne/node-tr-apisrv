@@ -193,6 +193,7 @@ Handlers receive an object that wraps the underlying `http.IncomingMessage` and
 | `res` | The raw `http.ServerResponse`. |
 | `headers` | Request headers as received. |
 | `jsonResponse(data, statusCode?, excludeNoCacheHeaders?)` | Serializes JSON responses and sets default no-cache headers unless `excludeNoCacheHeaders` is `true`. |
+| `errorResponse(statusCode, detail?)` | Sends a JSON error using canonical HTTP status text. For `400 Bad Request`, the optional detail is appended in parentheses. |
 | `params` | Merged view of all parameters (body < query < path precedence). |
 | `pathParams` | Parameters parsed from the matched path template. |
 | `urlParams` | Parsed query parameters (unless suppressed). Arrays are preserved when the query repeats a key. |

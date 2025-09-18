@@ -159,6 +159,41 @@ test('handles DELETE requests', async () => {
     }
 });
 
+test('handlers can respond with JSON errors via errorResponse', async () => {
+    const port = 12354;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: {
+            POST: {
+                '/items': (r) => r.errorResponse(400, 'Input data is too complex')
+            },
+            GET: {
+                '/items': (r) => r.errorResponse(404)
+            }
+        }
+    });
+    try {
+        const invalid = await httpRequest(port, {
+            method: 'POST',
+            path: '/items',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}'
+        });
+        assert.strictEqual(invalid.status, 400);
+        const invalidBody = JSON.parse(invalid.data);
+        assert.strictEqual(invalidBody.code, 400);
+        assert.strictEqual(invalidBody.message, 'Bad Request (Input data is too complex)');
+
+        const missing = await httpRequest(port, { method: 'GET', path: '/items' });
+        assert.strictEqual(missing.status, 404);
+        const missingBody = JSON.parse(missing.data);
+        assert.strictEqual(missingBody.code, 404);
+        assert.strictEqual(missingBody.message, 'Not Found');
+    } finally {
+        await srv.shutdown();
+    }
+});
+
 test('requestHandlers take precedence over callback', async () => {
     const port = 12361;
     const srv = new ApiSrv({
