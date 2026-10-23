@@ -725,6 +725,7 @@ class ApiSrv {
             r.headers = req.headers;
             r.res = res;
             r.req = req;
+            r.requestPayloadBuffer = body;
             r.bodyParams = undefined;
             r.urlParams = undefined;
             r.pathParams = undefined;
