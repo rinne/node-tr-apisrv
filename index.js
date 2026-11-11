@@ -30,9 +30,12 @@ const HANDLER_OPTION_KEYS = new Set([
     'pathParamsValidator',
     'urlParamsValidator',
     'bodyParamsValidator',
-    'ignoreUrlParams'
+    'ignoreUrlParams',
+    'authCallback',
+    'meta'
 ]);
 const PARAM_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const DANGEROUS_PARAM_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 const DEFAULT_SPLAT_MIN = 1;
 const DEFAULT_SPLAT_MAX = 32;
 
@@ -145,6 +148,15 @@ function normalizeHandlerOptions(method, path, options) {
             normalized.ignoreUrlParams = true;
         }
     }
+    if (options.authCallback !== undefined) {
+        if (typeof options.authCallback !== 'function') {
+            throw new Error(`authCallback must be a function for ${method} ${path}`);
+        }
+        normalized.authCallback = options.authCallback;
+    }
+    if (options.meta !== undefined) {
+        normalized.meta = options.meta;
+    }
     return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
@@ -202,7 +214,7 @@ function compilePathTemplate(path) {
         if ((match = part.match(/^\{([A-Za-z_][A-Za-z0-9_]*)\}$/))) {
             hasDynamic = true;
             const name = match[1];
-            if (!PARAM_NAME_RE.test(name)) {
+            if (!PARAM_NAME_RE.test(name) || (name === '__proto__')) {
                 throw new Error(`Invalid path parameter name "${name}" in ${path}`);
             }
             segments.push({ type: 'param', name });
@@ -210,7 +222,7 @@ function compilePathTemplate(path) {
             hasDynamic = true;
             hasSplat = true;
             const name = match[1];
-            if (!PARAM_NAME_RE.test(name)) {
+            if (!PARAM_NAME_RE.test(name) || (name === '__proto__')) {
                 throw new Error(`Invalid path parameter name "${name}" in ${path}`);
             }
             let minItems = DEFAULT_SPLAT_MIN;
@@ -377,9 +389,46 @@ function assignParams(target, source, sourceType, sources) {
                 console.warn(`ApiSrv warning: parameter "${key}" from ${currentLabel} overrides value from ${prevLabel}.`);
             }
         }
-        target[key] = value;
+        // A plain assignment of the key "__proto__" would replace the
+        // prototype of the target instead of creating a parameter.
+        Object.defineProperty(target, key, {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true
+        });
         sources.set(key, sourceType);
     }
+}
+
+// Returns the first own key named __proto__, constructor or prototype found
+// in value at any depth, or undefined when there is none.
+function findDangerousParamName(value) {
+    const stack = [value];
+    while (stack.length > 0) {
+        const current = stack.pop();
+        if (!current || (typeof current !== 'object')) {
+            continue;
+        }
+        if (Array.isArray(current)) {
+            for (const item of current) {
+                if (item && (typeof item === 'object')) {
+                    stack.push(item);
+                }
+            }
+            continue;
+        }
+        for (const key of Object.keys(current)) {
+            if (DANGEROUS_PARAM_NAMES.has(key)) {
+                return key;
+            }
+            const item = current[key];
+            if (item && (typeof item === 'object')) {
+                stack.push(item);
+            }
+        }
+    }
+    return undefined;
 }
 
 function normalizeMethod(method) {
@@ -417,22 +466,27 @@ function findMatchInStore(store, path) {
     if (!store) {
         return null;
     }
+    // A request target that is not a path (e.g. "*" or an absolute URL)
+    // matches no handler.
+    if ((typeof path !== 'string') || !path.startsWith('/')) {
+        return null;
+    }
     let exact = store.exact.get(path);
     if (exact) {
-        return { handler: exact.handler, options: exact.options, params: {} };
+        return { handler: exact.handler, options: exact.options, params: {}, template: exact.template };
     }
     if ((path.length > 1) && path.endsWith('/')) {
         const trimmed = path.slice(0, -1);
         exact = store.exact.get(trimmed);
         if (exact && !exact.hasTrailingSlash) {
-            return { handler: exact.handler, options: exact.options, params: {} };
+            return { handler: exact.handler, options: exact.options, params: {}, template: exact.template };
         }
     }
     const pathInfo = describePath(path);
     for (const entry of store.dynamic.values()) {
         const params = matchCompiledPath(entry, pathInfo);
         if (params) {
-            return { handler: entry.handler, options: entry.options, params };
+            return { handler: entry.handler, options: entry.options, params, template: entry.template };
         }
     }
     return null;
@@ -551,8 +605,65 @@ class ApiSrv {
     } else {
         this.maxBodySize = 1024 * 1024;
     }
+    if ((opts.errorCallback !== undefined) && (opts.errorCallback !== null)) {
+        if (typeof(opts.errorCallback) === 'function') {
+            this.errorCallback = opts.errorCallback;
+        } else {
+            throw new Error(`Bad errorCallback for ApiSrv constructor: ${opts.errorCallback}`);
+        }
+    } else {
+        this.errorCallback = undefined;
+    }
+    if ((opts.pathRewrite !== undefined) && (opts.pathRewrite !== null)) {
+        if (typeof(opts.pathRewrite) === 'function') {
+            this.pathRewrite = opts.pathRewrite;
+        } else {
+            throw new Error(`Bad pathRewrite for ApiSrv constructor: ${opts.pathRewrite}`);
+        }
+    } else {
+        this.pathRewrite = undefined;
+    }
+    if (opts.requireObjectBody === undefined) {
+        this.requireObjectBody = false;
+    } else if (typeof opts.requireObjectBody === 'boolean') {
+        this.requireObjectBody = opts.requireObjectBody;
+    } else {
+        throw new Error(`Bad requireObjectBody for ApiSrv constructor: ${opts.requireObjectBody}`);
+    }
+    if (opts.rejectDangerousParamNames === undefined) {
+        this.rejectDangerousParamNames = false;
+    } else if (typeof opts.rejectDangerousParamNames === 'boolean') {
+        this.rejectDangerousParamNames = opts.rejectDangerousParamNames;
+    } else {
+        throw new Error(`Bad rejectDangerousParamNames for ApiSrv constructor: ${opts.rejectDangerousParamNames}`);
+    }
     srvOpts.headersTimeout = this.bodyReadTimeoutMs;
     srvOpts.requestTimeout = this.bodyReadTimeoutMs + 1;
+
+    // Applies the optional pathRewrite to a request path. Returns the path to
+    // use, or undefined when the rewrite fails or returns something that is
+    // not a path.
+    const rewritePath = (path) => {
+        if (!this.pathRewrite) {
+            return path;
+        }
+        let rewritten;
+        try {
+            rewritten = this.pathRewrite(path);
+        } catch (e) {
+            if (this.debug) {
+                console.log(e);
+            }
+            return undefined;
+        }
+        if ((rewritten === undefined) || (rewritten === null)) {
+            return path;
+        }
+        if ((typeof rewritten !== 'string') || !rewritten.startsWith('/')) {
+            return undefined;
+        }
+        return rewritten;
+    };
 
     const upgradeCb = async (req, s, head) => {
         var m, r = {};
@@ -565,6 +676,15 @@ class ApiSrv {
             r.url = req.url;
             rawQueryString = undefined;
         }
+        r.originalUrl = r.url;
+        {
+            const rewritten = rewritePath(r.url);
+            if (rewritten === undefined) {
+                s.destroy();
+                return false;
+            }
+            r.url = rewritten;
+        }
         r.bodyParams = undefined;
         r.urlParams = undefined;
         r.pathParams = undefined;
@@ -575,6 +695,11 @@ class ApiSrv {
             const ret = await this.authCallback(r);
             if (ret) {
                 const queryOnlyParams = parseQuery(rawQueryString);
+                if (this.rejectDangerousParamNames && findDangerousParamName(queryOnlyParams)) {
+                    s.destroy();
+                    s = undefined;
+                    return false;
+                }
                 r.urlParams = queryOnlyParams;
                 r.params = queryOnlyParams;
                 r.bodyParams = Object.create(null);
@@ -604,22 +729,24 @@ class ApiSrv {
         }
     };
     const requestCb = (req, res) => {
-        var completed = false, body = Buffer.alloc(0), r = {}, timeout, bodySize = 0;
+        var completed = false, body = Buffer.alloc(0), chunks = [], r = {}, timeout, bodySize = 0;
         var contentType, contentTypeArgs;
         var declaredContentLength;
+        // What an errorCallback is told about an error of this request.
+        const ctx = (source, extra) => Object.assign({ source, req, res, request: r }, extra);
         if (req.headers['transfer-encoding'] && req.headers['content-length']) {
-            error(res, 400, 'Both Transfer-Encoding and Content-Length defined.');
+            error(res, 400, 'Both Transfer-Encoding and Content-Length defined.', undefined, ctx('request'));
             return;
         }
         if (req.headers['content-length']) {
             var cl = parseInt(req.headers['content-length'], 10);
             if (!Number.isSafeInteger(cl) || cl < 0) {
-                error(res, 400, 'Bad Content-Length header.');
+                error(res, 400, 'Bad Content-Length header.', undefined, ctx('request'));
                 return;
             }
             declaredContentLength = cl;
             if (this.maxBodySize && (cl > this.maxBodySize)) {
-                error(res, 413, 'Request body too large.');
+                error(res, 413, 'Request body too large.', undefined, ctx('limit'));
                 try {
                     req.destroy();
                 } catch (ignored) {
@@ -638,7 +765,7 @@ class ApiSrv {
                     clearTimeout(timeout);
                     timeout = undefined;
                 }
-                error(res, 400, 'Request body longer than Content-Length.');
+                error(res, 400, 'Request body longer than Content-Length.', undefined, ctx('request'));
                 try {
                     req.destroy();
                 } catch (ignored) {
@@ -651,14 +778,14 @@ class ApiSrv {
                     clearTimeout(timeout);
                     timeout = undefined;
                 }
-                error(res, 413, 'Request body too large.');
+                error(res, 413, 'Request body too large.', undefined, ctx('limit'));
                 try {
                     req.destroy();
                 } catch (ignored) {
                 }
                 return;
             }
-            body = Buffer.concat( [ body, data ] );
+            chunks.push(data);
         };
         const endCb = async () => {
             if (completed) {
@@ -669,8 +796,10 @@ class ApiSrv {
                 clearTimeout(timeout);
                 timeout = undefined;
             }
+            body = Buffer.concat(chunks, bodySize);
+            chunks = [];
             if (declaredContentLength !== undefined && (body.length !== declaredContentLength)) {
-                error(res, 400, 'Request body length does not match Content-Length.');
+                error(res, 400, 'Request body length does not match Content-Length.', undefined, ctx('request'));
                 return;
             }
             if (req.headers['content-type']) {
@@ -679,7 +808,7 @@ class ApiSrv {
                     contentType = ct.type;
                     contentTypeArgs = ct.params;
                 } else {
-                    error(res, 400, 'Unable to parse content-type.');
+                    error(res, 400, 'Unable to parse content-type.', undefined, ctx('request'));
                     return;
                 }
             }
@@ -688,7 +817,7 @@ class ApiSrv {
             case 'POST':
             case 'PUT':
                 if (req.url.match(/\?/)) {
-                    error(res, 400, 'URL for POST or PUT must not contain query parameters.');
+                    error(res, 400, 'URL for POST or PUT must not contain query parameters.', undefined, ctx('request'));
                     return;
                 }
                 r.url = req.url;
@@ -698,7 +827,7 @@ class ApiSrv {
             case 'GET':
             case 'DELETE':
                 if (body.length > 0) {
-                    error(res, 400, 'Empty body required for ' + req.method + ' requests.');
+                    error(res, 400, 'Empty body required for ' + req.method + ' requests.', undefined, ctx('request'));
                     return;
                 }
                 var m;
@@ -712,14 +841,30 @@ class ApiSrv {
                 r.method = req.method;
                 break;
             default:
-                error(res, 405, 'Only GET, POST, PUT, and DELETE are allowed.');
+                error(res, 405, 'Only GET, POST, PUT, and DELETE are allowed.', undefined, ctx('request'));
                 return;
             }
             if (this.rejectDangerousPaths) {
                 const reason = detectDangerousPath(r.url);
                 if (reason) {
-                    error(res, 400, reason);
+                    error(res, 400, reason, undefined, ctx('request'));
                     return;
+                }
+            }
+            r.originalUrl = r.url;
+            {
+                const rewritten = rewritePath(r.url);
+                if (rewritten === undefined) {
+                    error(res, 500, 'Request path rewrite fails.', undefined, ctx('router'));
+                    return;
+                }
+                r.url = rewritten;
+                if (this.rejectDangerousPaths && (rewritten !== r.originalUrl)) {
+                    const reason = detectDangerousPath(r.url);
+                    if (reason) {
+                        error(res, 400, reason, undefined, ctx('request'));
+                        return;
+                    }
                 }
             }
             r.headers = req.headers;
@@ -731,7 +876,8 @@ class ApiSrv {
             r.pathParams = undefined;
             r.params = undefined;
             r.jsonResponse = (data, code, excludeNoCacheHeaders) => {
-                var headers = { 'Content-Type': 'application/json; charset=utf-8' };
+                var headers = { 'Content-Type': 'application/json; charset=utf-8',
+                                'X-Content-Type-Options': 'nosniff' };
                 if (! excludeNoCacheHeaders) {
                     headers = Object.assign(headers,
                                             { 'Cache-Control': 'no-store, no-cache, must-revalidate, post-check=0, pre-check=0',
@@ -755,6 +901,7 @@ class ApiSrv {
                 let handler = handlerEntry ? handlerEntry.handler : undefined;
                 let handlerOptions = handlerEntry ? handlerEntry.options : undefined;
                 let pathParams = handlerEntry ? handlerEntry.params : Object.create(null);
+                r.handler = undefined;
                 if (!handler) {
                     if (this.callback) {
                         handler = this.callback;
@@ -763,14 +910,23 @@ class ApiSrv {
                     } else {
                         const hasOtherMethod = this.#hasHandlerForOtherMethod(r.method, r.url);
                         if (hasOtherMethod) {
-                            jsonError(res, 405, 'Method Not Allowed');
+                            jsonError(res, 405, 'Method Not Allowed', ctx('router'));
                         } else {
-                            jsonError(res, 404, 'Not Found');
+                            jsonError(res, 404, 'Not Found', ctx('router'));
                         }
                         return;
                     }
+                } else {
+                    r.handler = {
+                        method: r.method,
+                        path: handlerEntry.template,
+                        meta: handlerOptions ? handlerOptions.meta : undefined
+                    };
                 }
-                const auth = await this.authCallback(r);
+                let auth = await this.authCallback(r);
+                if (auth && handlerOptions && handlerOptions.authCallback) {
+                    auth = await handlerOptions.authCallback(r);
+                }
                 if (auth) {
                     const paramSources = new Map();
                     const ignoreUrlParams = handlerOptions && handlerOptions.ignoreUrlParams === true;
@@ -778,13 +934,14 @@ class ApiSrv {
                         try {
                             const result = await validator(value);
                             if (!result || typeof result !== 'object') {
-                                error(res, 500, `${description} validator must return an object.`);
+                                error(res, 500, `${description} validator must return an object.`, undefined,
+                                      ctx('validator', { stage: description }));
                                 return { success: false };
                             }
                             return { success: true, value: result };
                         } catch (err) {
                             const detail = (err && err.message) ? err.message : `Invalid ${description}.`;
-                            error(res, 400, detail);
+                            error(res, 400, detail, undefined, ctx('validator', { stage: description, cause: err }));
                             return { success: false };
                         }
                     };
@@ -799,6 +956,13 @@ class ApiSrv {
                     let urlParams;
                     if (!ignoreUrlParams) {
                         urlParams = parseQuery(rawQueryString);
+                        if (this.rejectDangerousParamNames) {
+                            const reserved = findDangerousParamName(urlParams);
+                            if (reserved) {
+                                error(res, 400, `Reserved parameter name "${reserved}" in query string.`, undefined, ctx('parser'));
+                                return;
+                            }
+                        }
                         if (handlerOptions && handlerOptions.urlParamsValidator) {
                             const validation = await runValidator(handlerOptions.urlParamsValidator, urlParams, 'URL parameters');
                             if (!validation.success) {
@@ -816,7 +980,7 @@ class ApiSrv {
                             break;
                         case 'application/json':
                             if (contentTypeArgs && contentTypeArgs.charset && (contentTypeArgs.charset !== 'utf-8')) {
-                                error(res, 400, 'Bad charset for JSON content type.');
+                                error(res, 400, 'Bad charset for JSON content type.', undefined, ctx('parser'));
                                 return;
                             }
                             try {
@@ -825,13 +989,24 @@ class ApiSrv {
                                 bodyParamsObject = undefined;
                             }
                             if (!(bodyParamsObject && (typeof bodyParamsObject === 'object'))) {
-                                error(res, 400, 'Unable to parse JSON query parameters.');
+                                error(res, 400, 'Unable to parse JSON query parameters.', undefined, ctx('parser'));
+                                return;
+                            }
+                            if (this.requireObjectBody && Array.isArray(bodyParamsObject)) {
+                                error(res, 400, 'JSON body must be an object.', undefined, ctx('parser'));
                                 return;
                             }
                             break;
                         case 'multipart/form-data':
                         default:
-                            error(res, 400, 'POST or PUT body must be in JSON or www-form-urlencoded format.');
+                            error(res, 400, 'POST or PUT body must be in JSON or www-form-urlencoded format.', undefined, ctx('parser'));
+                            return;
+                        }
+                    }
+                    if (this.rejectDangerousParamNames) {
+                        const reserved = findDangerousParamName(bodyParamsObject);
+                        if (reserved) {
+                            error(res, 400, `Reserved parameter name "${reserved}" in request body.`, undefined, ctx('parser'));
                             return;
                         }
                     }
@@ -878,8 +1053,8 @@ class ApiSrv {
                     console.log(e);
                 }
                 try {
-                    error(res, 500, 'Request handler fails to execute.');
-                } catch(e) {
+                    error(res, 500, 'Request handler fails to execute.', undefined, ctx('handler', { cause: e }));
+                } catch(ignored) {
                 }
             }
         };
@@ -892,7 +1067,7 @@ class ApiSrv {
                 clearTimeout(timeout);
                 timeout = undefined;
             }
-            error(res, 400, 'Error occured while reading the request data.');
+            error(res, 400, 'Error occured while reading the request data.', undefined, ctx('request'));
         };
         const timeoutCb = () => {
             if (completed) {
@@ -900,18 +1075,63 @@ class ApiSrv {
             }
             timeout = undefined;
             completed = true;
-            error(res, 408, 'Timeout occured while reading the request data.');
+            error(res, 408, 'Timeout occured while reading the request data.', undefined, ctx('limit'));
         };
         timeout = setTimeout(timeoutCb, this.bodyReadTimeoutMs);
         req.on('data', dataCb);
         req.on('end', endCb);
         req.on('error', errorCb);
     };
-    const error = (res, code, text, RFC6749EC) => {
+    // Offers a server-generated error to the optional errorCallback. The
+    // default response is written when there is no callback, when it returns
+    // (or resolves to) a falsy value, or when it fails.
+    const reportError = (res, context, writeDefault) => {
+        if (!this.errorCallback) {
+            writeDefault();
+            return;
+        }
+        const fallback = () => {
+            if (res.headersSent || res.writableEnded) {
+                return;
+            }
+            try {
+                writeDefault();
+            } catch (ignored) {
+            }
+        };
+        let ret;
+        try {
+            ret = this.errorCallback(context);
+        } catch (e) {
+            if (this.debug) {
+                console.log(e);
+            }
+            fallback();
+            return;
+        }
+        if (ret && (typeof ret.then === 'function')) {
+            ret.then((handled) => {
+                if (!handled) {
+                    fallback();
+                }
+            }, (e) => {
+                if (this.debug) {
+                    console.log(e);
+                }
+                fallback();
+            });
+            return;
+        }
+        if (!ret) {
+            fallback();
+        }
+    };
+    const error = (res, code, text, RFC6749EC, context) => {
         if (RFC6749EC) {
             // RFC6749 wants these errors to be code 400 except in case of 401
             res.writeHead((code != 401) ? 400 : 401,
-                          { 'Content-Type': 'application/json; charset=utf-8' });
+                          { 'Content-Type': 'application/json; charset=utf-8',
+                            'X-Content-Type-Options': 'nosniff' });
             res.write(JSON.stringify( { error: RFC6749EC,
                                         error_description: (text ?
                                                             (text +
@@ -923,25 +1143,42 @@ class ApiSrv {
                                       null, 2));
 
             res.write("\n");
-        } else {
-            const canonical = HTTP_STATUS_MESSAGES[code] || 'Error';
-            let detail = text ? text.trim() : '';
-            if (detail) {
-                detail = detail.replace(/\.+$/, '');
-            }
-            let message = canonical;
-            if (code === 400 && detail) {
-                message = `${canonical} (${detail})`;
-            }
-            res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.write(JSON.stringify({ code, message }));
+            res.end();
+            return;
         }
-        res.end();
+        const canonical = HTTP_STATUS_MESSAGES[code] || 'Error';
+        let detail = text ? text.trim() : '';
+        if (detail) {
+            detail = detail.replace(/\.+$/, '');
+        }
+        let message = canonical;
+        if (code === 400 && detail) {
+            message = `${canonical} (${detail})`;
+        }
+        const writeDefault = () => {
+            res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8',
+                                  'X-Content-Type-Options': 'nosniff' });
+            res.write(JSON.stringify({ code, message }));
+            res.end();
+        };
+        if (!context) {
+            writeDefault();
+            return;
+        }
+        reportError(res, Object.assign({ code, message, detail: detail || undefined }, context), writeDefault);
     };
-    const jsonError = (res, code, message) => {
-        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.write(JSON.stringify({ message, code }));
-        res.end();
+    const jsonError = (res, code, message, context) => {
+        const writeDefault = () => {
+            res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8',
+                                  'X-Content-Type-Options': 'nosniff' });
+            res.write(JSON.stringify({ message, code }));
+            res.end();
+        };
+        if (!context) {
+            writeDefault();
+            return;
+        }
+        reportError(res, Object.assign({ code, message, detail: undefined }, context), writeDefault);
     };
     this.server = proto.createServer(srvOpts, requestCb);
     if (this.upgradeCallback) {
@@ -1001,6 +1238,22 @@ class ApiSrv {
             this._requestHandlers.delete(normalizedMethod);
         }
         return removed;
+    }
+
+    // Returns the registered request handlers as { method, path, meta }
+    // objects, in registration order for each method.
+    requestHandlerList() {
+        const list = [];
+        for (const [method, store] of this._requestHandlers.entries()) {
+            for (const entry of [...store.exact.values(), ...store.dynamic.values()]) {
+                list.push({
+                    method,
+                    path: entry.template,
+                    meta: entry.options ? entry.options.meta : undefined
+                });
+            }
+        }
+        return list;
     }
 
     #matchRequestHandler(method, path) {

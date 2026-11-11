@@ -77,6 +77,10 @@ request, `tr-apisrv` returns a canonical JSON error such as
 | `rejectDangerousPaths` | boolean | `true` | Reject paths containing empty, `.` or `..` segments with HTTP 400. |
 | `bodyReadTimeoutMs` | number | `2000` | Milliseconds allowed to fully read the request body. Applies to upgrade as well. |
 | `maxBodySize` | number | `1048576` | Maximum allowed request body size in bytes. `0` allows only empty bodies. |
+| `errorCallback` | function | `undefined` | Called for every error response the server generates itself, so that the application can send its own. See [Custom error responses](#custom-error-responses). |
+| `pathRewrite` | function | `undefined` | `(path) => path`, applied to the request path before handlers are matched. See [Path rewriting](#path-rewriting). |
+| `requireObjectBody` | boolean | `false` | When true, a JSON body that is an array is rejected with HTTP 400. |
+| `rejectDangerousParamNames` | boolean | `false` | When true, a request whose body or query string has a key named `__proto__`, `constructor` or `prototype`, at any depth, is rejected with HTTP 400. |
 | `debug` | boolean | `false` | Enables verbose logging for authentication failures and handler completion. |
 
 The server accepts only `GET`, `POST`, `PUT`, and `DELETE` requests. Other
@@ -145,6 +149,8 @@ return an object.
 | `bodyParamsValidator` | Validates and can transform `request.bodyParams`. |
 | `paramsValidator` | Validates the merged `request.params` object. |
 | `ignoreUrlParams` | When `true`, the query string is ignored and `request.urlParams` is left `undefined`. |
+| `authCallback` | Authentication for this handler only. Runs after the server's `authCallback` has accepted the request and, like it, before any parameters are parsed. Return truthy to continue; when returning falsy, send the response yourself. |
+| `meta` | Any value you want to attach to the handler, for example a name or the scopes it needs. Available as `request.handler.meta` and from `requestHandlerList()`. |
 
 #### Validator example
 
@@ -172,6 +178,25 @@ server.requestHandleAdd('POST', '/import', importHandler, {
 You can supply the same `options` when adding handlers at runtime with
 `requestHandleAdd(method, path, callback, options)`.
 
+#### Per-handler authentication and metadata
+
+```javascript
+server.requestHandleAdd('POST', '/admin/users', createUser, {
+  meta: { name: 'create-user', scope: 'admin' },
+  authCallback: async (request) => {
+    if (await tokenHasScope(request.headers.authorization, request.handler.meta.scope)) {
+      return true;
+    }
+    request.jsonResponse({ code: 403, message: 'Forbidden' }, 403);
+    return false;
+  }
+});
+```
+
+`request.handler` is `{ method, path, meta }` for a request matched by
+`requestHandlers`, where `path` is the template that matched. It is
+`undefined` when the fallback `callback` serves the request.
+
 ### Runtime updates
 
 Handlers may be added, replaced, or removed without restarting the process:
@@ -189,6 +214,16 @@ server.requestHandleDelete('POST', '/status');
 server.requestHandleDelete('*', '/status');
 ```
 
+`requestHandlerList()` returns the registered handlers as
+`{ method, path, meta }` objects, which is useful for generating
+documentation or checking that every route has what it needs:
+
+```javascript
+for (const { method, path, meta } of server.requestHandlerList()) {
+  console.log(method, path, meta);
+}
+```
+
 ## Request object
 
 Handlers receive an object that wraps the underlying `http.IncomingMessage` and
@@ -197,7 +232,10 @@ Handlers receive an object that wraps the underlying `http.IncomingMessage` and
 | Property | Description |
 | --- | --- |
 | `method` | Uppercase HTTP method. |
-| `url` | Request path without the query string. |
+| `url` | Request path without the query string, after `pathRewrite` when one is configured. |
+| `originalUrl` | Request path without the query string, as received. |
+| `handler` | `{ method, path, meta }` of the matched `requestHandlers` entry, or `undefined` for the fallback `callback`. |
+| `requestPayloadBuffer` | The request body as received, as a `Buffer`. |
 | `req` | The raw `http.IncomingMessage`. |
 | `res` | The raw `http.ServerResponse`. |
 | `headers` | Request headers as received. |
@@ -227,6 +265,28 @@ path. Later sources override earlier ones in `request.params`. When this occurs,
 * Bodies larger than `maxBodySize` yield `413 Payload Too Large`.
 * Slow clients that exceed `bodyReadTimeoutMs` cause `408 Request Timeout`.
 
+## Path rewriting
+
+`pathRewrite` receives the request path (without the query string) and returns
+the path to use for matching handlers. Return `undefined` to keep the path as
+it is. It is the place to strip a deployment prefix, so that one handler table
+serves the same routes under several mount points:
+
+```javascript
+const server = new ApiSrv({
+  port: 8808,
+  // /api/v1/users, /v1/users and /users all reach the '/users' handler
+  pathRewrite: (path) => path.replace(/^\/(api\/)?(v1\/)?/, '/'),
+  requestHandlers: { GET: { '/users': listUsers } }
+});
+```
+
+The function must be synchronous and must return a string that starts with
+`/`; anything else, or a thrown error, results in HTTP 500. The dangerous path
+check applies both to the path as received and to the rewritten one.
+`request.url` holds the rewritten path and `request.originalUrl` the original.
+Upgrade requests are rewritten in the same way.
+
 ## Authentication and upgrades
 
 Before a handler runs, `authCallback` is awaited with the request object. During
@@ -254,6 +314,65 @@ status text in the `message` property, for example:
 Additional context is appended in parentheses for 400-series validation errors,
 matching the format `"Bad Request (detailed reason)"`.
 
+### Custom error responses
+
+Set `errorCallback` to answer these errors in your own format. It is called
+with one object for every error response that `tr-apisrv` generates itself:
+
+| Property | Description |
+| --- | --- |
+| `code` | The HTTP status the server would answer with. |
+| `message` | The message of the default response, e.g. `Bad Request (detailed reason)`. |
+| `detail` | The detail alone, when there is one. |
+| `source` | What produced the error: `request` (malformed request, dangerous path, unsupported method), `limit` (body too large, read timeout), `parser` (unparsable or unacceptable body or parameters), `validator` (a parameter validator threw or returned a non-object), `router` (no handler: 404 or 405, or a failing `pathRewrite`), `handler` (the handler threw). |
+| `stage` | For `validator`: which validator, e.g. `request parameters`. |
+| `cause` | For `validator` and `handler`: the error that was thrown. A validator can attach anything to it, such as a list of problems. |
+| `req`, `res` | The raw request and response. |
+| `request` | The request wrapper. Depending on how far the request got, some of its properties are not set yet. |
+
+Send the response and return a truthy value. Return a falsy value to let the
+server send its default response; it does that too when the callback throws
+or leaves the response unsent.
+
+```javascript
+const server = new ApiSrv({
+  port: 8808,
+  errorCallback: (error) => {
+    const body = { status: 'error', code: error.code, message: error.message };
+    if (error.source === 'validator' && error.cause && error.cause.problems) {
+      body.problems = error.cause.problems;
+    }
+    error.res.writeHead(error.code, { 'Content-Type': 'application/json; charset=utf-8' });
+    error.res.end(JSON.stringify(body));
+    return true;
+  },
+  requestHandlers: {
+    POST: {
+      '/items': {
+        callback: createItem,
+        options: {
+          paramsValidator: (params) => {
+            const problems = checkItem(params);
+            if (problems.length > 0) {
+              const err = new Error('Invalid item');
+              err.problems = problems;
+              throw err;
+            }
+            return params;
+          }
+        }
+      }
+    }
+  }
+});
+```
+
+The callback may be asynchronous. For errors raised while the request is still
+being read (`limit`, and some of `request`) the connection is closed right
+after the error, so respond synchronously for those. Responses that a handler
+sends with `request.errorResponse()` or `request.jsonResponse()` do not go
+through the callback.
+
 Handlers remain free to craft any response, including non-JSON payloads, by using
 `request.res` directly. The convenience method `jsonResponse` is suitable for
 most use cases:
@@ -278,6 +397,55 @@ const srv = new ApiSrv({
   callback: handler
 });
 ```
+
+### Parameter names
+
+A parameter named `__proto__` is an ordinary own property of
+`request.params`; it never replaces the prototype of the object. A JSON body
+can nevertheless carry keys such as `__proto__` or `constructor` at any depth,
+and code that later copies such objects with `Object.assign` or a recursive
+merge can be tricked by them. If your API has no use for those names, reject
+them outright:
+
+```javascript
+const srv = new ApiSrv({
+  port: 8808,
+  rejectDangerousParamNames: true,   // 400 for __proto__, constructor, prototype keys
+  requireObjectBody: true,           // 400 for a JSON array as the body
+  callback: handler
+});
+```
+
+Without `requireObjectBody`, the items of a JSON array body become the
+parameters `"0"`, `"1"` and so on.
+
+### Response headers
+
+JSON responses, including errors, carry `X-Content-Type-Options: nosniff`.
+
+## Changes in 3.0.0
+
+Version 3.0.0 is backwards compatible with 2.1.0: every existing option,
+method and default behaves as before. New:
+
+* `errorCallback`, for answering server-generated errors in your own format.
+* `pathRewrite`, and `request.originalUrl`.
+* Handler options `authCallback` and `meta`, and `request.handler`.
+* `requestHandlerList()`.
+* `requireObjectBody` and `rejectDangerousParamNames`.
+
+Fixes and hardening that apply without any configuration:
+
+* A parameter named `__proto__` in a JSON body used to become the prototype of
+  `request.params`, so that its contents appeared as parameters that were not
+  own properties. It is now an own property like any other.
+* `__proto__` is rejected as a path template parameter name.
+* A request target that is not a path (for example an absolute URL, when
+  `rejectDangerousPaths` is off) matched against `requestHandlers` used to
+  end in HTTP 500. It now matches nothing: 404, or the fallback `callback`.
+* JSON responses carry `X-Content-Type-Options: nosniff`.
+* The request body is assembled once instead of being copied for every chunk
+  received.
 
 ## License
 
