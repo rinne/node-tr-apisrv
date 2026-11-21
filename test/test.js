@@ -1148,6 +1148,26 @@ test('rejects requests exceeding Content-Length limit without reading body', asy
     }
 });
 
+test('maxBodySize 0 allows only empty bodies', async () => {
+    const port = 12422;
+    const srv = new ApiSrv({
+        port,
+        maxBodySize: 0,
+        callback: (r) => r.jsonResponse({ ok: true })
+    });
+    try {
+        assert.strictEqual(await rawRequest(port,
+            'POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}'), 413);
+        assert.strictEqual(await rawRequest(port,
+            'POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n'), 413);
+        assert.strictEqual(await rawRequest(port,
+            'POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'), 200);
+        assert.strictEqual((await httpRequest(port, { path: '/?a=b' })).status, 200);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
 test('enforces Content-Length to match body length', async () => {
     const port = 12358;
     const srv = new ApiSrv({
@@ -1500,6 +1520,7 @@ test('errorCallback handles body size and unsupported method errors', async () =
         });
         assert.strictEqual(res.status, 413);
         assert.deepStrictEqual(JSON.parse(res.data), { custom: 413 });
+        assert.strictEqual(res.headers.connection, 'close');
         res = await httpRequest(port, { method: 'PATCH', path: '/' });
         assert.strictEqual(res.status, 405);
         assert.deepStrictEqual(JSON.parse(res.data), { custom: 405 });

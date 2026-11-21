@@ -734,6 +734,30 @@ class ApiSrv {
         var declaredContentLength;
         // What an errorCallback is told about an error of this request.
         const ctx = (source, extra) => Object.assign({ source, req, res, request: r }, extra);
+        // Reject a request whose body is not read. The connection is
+        // closed, but only once the response has been written:
+        // destroying it at once could lose the response.
+        const rejectBody = (code, text, source) => {
+            const socket = req.socket;
+            const kill = () => {
+                if (socket && !socket.destroyed) {
+                    socket.destroy();
+                }
+            };
+            // Also when an errorCallback never responds.
+            const fallback = setTimeout(kill, this.bodyReadTimeoutMs);
+            fallback.unref();
+            res.once('finish', () => {
+                clearTimeout(fallback);
+                if (socket && !socket.destroyed) {
+                    socket.end();
+                    setTimeout(kill, 1000).unref();
+                }
+            });
+            res.once('close', () => clearTimeout(fallback));
+            res.setHeader('Connection', 'close');
+            error(res, code, text, undefined, ctx(source));
+        };
         if (req.headers['transfer-encoding'] && req.headers['content-length']) {
             error(res, 400, 'Both Transfer-Encoding and Content-Length defined.', undefined, ctx('request'));
             return;
@@ -745,12 +769,8 @@ class ApiSrv {
                 return;
             }
             declaredContentLength = cl;
-            if (this.maxBodySize && (cl > this.maxBodySize)) {
-                error(res, 413, 'Request body too large.', undefined, ctx('limit'));
-                try {
-                    req.destroy();
-                } catch (ignored) {
-                }
+            if (cl > this.maxBodySize) {
+                rejectBody(413, 'Request body too large.', 'limit');
                 return;
             }
         }
@@ -765,24 +785,16 @@ class ApiSrv {
                     clearTimeout(timeout);
                     timeout = undefined;
                 }
-                error(res, 400, 'Request body longer than Content-Length.', undefined, ctx('request'));
-                try {
-                    req.destroy();
-                } catch (ignored) {
-                }
+                rejectBody(400, 'Request body longer than Content-Length.', 'request');
                 return;
             }
-            if (this.maxBodySize && (bodySize > this.maxBodySize)) {
+            if (bodySize > this.maxBodySize) {
                 completed = true;
                 if (timeout) {
                     clearTimeout(timeout);
                     timeout = undefined;
                 }
-                error(res, 413, 'Request body too large.', undefined, ctx('limit'));
-                try {
-                    req.destroy();
-                } catch (ignored) {
-                }
+                rejectBody(413, 'Request body too large.', 'limit');
                 return;
             }
             chunks.push(data);

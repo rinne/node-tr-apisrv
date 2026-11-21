@@ -262,7 +262,10 @@ path. Later sources override earlier ones in `request.params`. When this occurs,
   `application/x-www-form-urlencoded`. Other types result in
   `400 Bad Request (POST or PUT body must be in JSON or www-form-urlencoded format.)`.
 * `GET` and `DELETE` requests must not include a body.
-* Bodies larger than `maxBodySize` yield `413 Payload Too Large`.
+* Bodies larger than `maxBodySize` yield `413 Payload Too Large`; with
+  `maxBodySize: 0` any non-empty body does. The response to a rejected
+  body is sent with `Connection: close` and the connection is closed
+  after it.
 * Slow clients that exceed `bodyReadTimeoutMs` cause `408 Request Timeout`.
 
 ## Path rewriting
