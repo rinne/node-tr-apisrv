@@ -1,6 +1,20 @@
 Changelog
 =========
 
+3.2.0
+-----
+
+### Changed behaviour
+
+- `rejectDangerousPaths` also looks at percent-decoded path segments.
+  `%2e%2e` and `%2e` are rejected like `..` and `.`, and so is a
+  segment that decodes to something containing `/`, `\` or NUL
+  (`..%2f..`), a raw `\`, or a malformed escape. Before, these
+  reached the handlers, where a path parameter could then be `..` or
+  `../../etc`.
+- Upgrade requests go through the same check, before and after
+  `pathRewrite`. Before, they were not checked at all.
+
 3.1.0
 -----
 
