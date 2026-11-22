@@ -1126,7 +1126,7 @@ class ApiSrv {
             }
             timeout = undefined;
             completed = true;
-            error(res, 408, 'Timeout occured while reading the request data.', undefined, ctx('limit'));
+            rejectBody(408, 'Timeout occured while reading the request data.', 'limit');
         };
         timeout = setTimeout(timeoutCb, this.bodyReadTimeoutMs);
         req.on('data', dataCb);
@@ -1150,6 +1150,27 @@ class ApiSrv {
             } catch (ignored) {
             }
         };
+        // A callback that claims the error must also respond. If it
+        // hasn't within bodyReadTimeoutMs, the default response is
+        // written, or the connection closed if it started one.
+        const claimed = () => {
+            if (res.writableEnded) {
+                return;
+            }
+            const timer = setTimeout(() => {
+                if (res.writableEnded) {
+                    return;
+                }
+                if (!res.headersSent) {
+                    fallback();
+                } else if (res.socket && !res.socket.destroyed) {
+                    res.socket.destroy();
+                }
+            }, this.bodyReadTimeoutMs);
+            timer.unref();
+            res.once('finish', () => clearTimeout(timer));
+            res.once('close', () => clearTimeout(timer));
+        };
         let ret;
         try {
             ret = this.errorCallback(context);
@@ -1164,6 +1185,8 @@ class ApiSrv {
             ret.then((handled) => {
                 if (!handled) {
                     fallback();
+                } else {
+                    claimed();
                 }
             }, (e) => {
                 if (this.debug) {
@@ -1175,6 +1198,8 @@ class ApiSrv {
         }
         if (!ret) {
             fallback();
+        } else {
+            claimed();
         }
     };
     const error = (res, code, text, RFC6749EC, context) => {

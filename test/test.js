@@ -1873,3 +1873,42 @@ test('upgrade requests use pathRewrite and reject reserved query names', async (
         await srv.shutdown();
     }
 });
+
+test('an errorCallback that claims an error but never responds gets the default response', async () => {
+    const port = 12424;
+    const srv = new ApiSrv({
+        port,
+        bodyReadTimeoutMs: 300,
+        requestHandlers: { GET: { '/x': (r) => r.jsonResponse({}) } },
+        errorCallback: () => true
+    });
+    try {
+        const t0 = Date.now();
+        const res = await httpRequest(port, { path: '/nope' });
+        assert.strictEqual(res.status, 404);
+        assert.ok(Date.now() - t0 >= 250);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('a body read timeout gives 408 and closes the connection', async () => {
+    const port = 12425;
+    const srv = new ApiSrv({ port, bodyReadTimeoutMs: 300, callback: (r) => r.jsonResponse({}) });
+    try {
+        const t0 = Date.now();
+        const { data, closedAfter } = await new Promise((resolve, reject) => {
+            const socket = net.connect(port, '127.0.0.1');
+            let data = '';
+            socket.on('connect', () => socket.write('POST / HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n{}'));
+            socket.on('data', (d) => data += d.toString());
+            socket.on('close', () => resolve({ data, closedAfter: Date.now() - t0 }));
+            socket.on('error', reject);
+        });
+        assert.match(data, /^HTTP\/1\.1 408/);
+        assert.match(data, /\r\nConnection: close\r\n/i);
+        assert.ok(closedAfter < 2000, `closed after ${closedAfter} ms`);
+    } finally {
+        await srv.shutdown();
+    }
+});
