@@ -814,7 +814,17 @@ test('rejects dangerous paths by default', async () => {
         const cases = [
             { path: '/foo//bar', message: 'Bad Request (empty path segment)' },
             { path: '/foo/./bar', message: 'Bad Request (dangerous path segment ".")' },
-            { path: '/foo/../bar', message: 'Bad Request (dangerous path segment "..")' }
+            { path: '/foo/../bar', message: 'Bad Request (dangerous path segment "..")' },
+            { path: '/foo/%2e%2e/bar', message: 'Bad Request (dangerous path segment "..")' },
+            { path: '/foo/%2E%2e', message: 'Bad Request (dangerous path segment "..")' },
+            { path: '/foo/.%2e/bar', message: 'Bad Request (dangerous path segment "..")' },
+            { path: '/foo/%2e/bar', message: 'Bad Request (dangerous path segment ".")' },
+            { path: '/foo/..%2f..%2fetc', message: 'Bad Request (encoded path separator in path segment)' },
+            { path: '/foo/a%2Fb', message: 'Bad Request (encoded path separator in path segment)' },
+            { path: '/foo/a%5cb', message: 'Bad Request (encoded path separator in path segment)' },
+            { path: '/foo/a\\b', message: 'Bad Request (backslash in path segment)' },
+            { path: '/foo/a%00b', message: 'Bad Request (encoded NUL in path segment)' },
+            { path: '/foo/%e0%a4%a', message: 'Bad Request (invalid percent-encoding in path)' }
         ];
         for (const { path, message } of cases) {
             const res = await httpRequest(port, { method: 'GET', path });
@@ -825,6 +835,23 @@ test('rejects dangerous paths by default', async () => {
             assert.strictEqual(body.message, message);
         }
         assert.strictEqual(handled, 0);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('ordinary percent-encoded path segments are accepted', async () => {
+    const port = 12423;
+    const srv = new ApiSrv({
+        port,
+        requestHandlers: { GET: { '/files/{name}': (r) => r.jsonResponse({ name: r.params.name }) } }
+    });
+    try {
+        for (const [path, name] of [['/files/a%20b', 'a b'], ['/files/v1%2e2', 'v1.2'], ['/files/%2e%2e%2e', '...'], ['/files/%C3%A4', '\u00e4']]) {
+            const res = await httpRequest(port, { method: 'GET', path });
+            assert.strictEqual(res.status, 200, path);
+            assert.deepStrictEqual(JSON.parse(res.data), { name }, path);
+        }
     } finally {
         await srv.shutdown();
     }
@@ -1837,6 +1864,11 @@ test('upgrade requests use pathRewrite and reject reserved query names', async (
         data = await upgrade('/svc/socket?__proto__=1');
         assert.strictEqual(data, '');
         assert.strictEqual(seen.length, 1);
+        for (const path of ['/svc/../socket', '/svc/%2e%2e/socket', '/svc/a%2fb']) {
+            data = await upgrade(path);
+            assert.match(data, /^HTTP\/1\.1 400/, path);
+        }
+        assert.strictEqual(seen.length, 1, 'dangerous paths never reach the upgrade callback');
     } finally {
         await srv.shutdown();
     }

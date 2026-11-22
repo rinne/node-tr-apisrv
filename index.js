@@ -55,6 +55,31 @@ function detectDangerousPath(path) {
     if ((path === '/..') || path.endsWith('/..') || path.includes('/../')) {
         return 'dangerous path segment ".."';
     }
+    // The same in percent-encoded form (%2e%2e), and segments that
+    // decode to something a handler could take as more than one
+    // segment, which the checks above cannot see.
+    const segments = path.split('/').slice(1);
+    for (const segment of segments) {
+        if (!segment.includes('%')) {
+            if (segment.includes('\\')) {
+                return 'backslash in path segment';
+            }
+            continue;
+        }
+        const decoded = decodePathSegment(segment);
+        if (decoded === null) {
+            return 'invalid percent-encoding in path';
+        }
+        if ((decoded === '.') || (decoded === '..')) {
+            return `dangerous path segment "${decoded}"`;
+        }
+        if (decoded.includes('/') || decoded.includes('\\')) {
+            return 'encoded path separator in path segment';
+        }
+        if (decoded.includes('\0')) {
+            return 'encoded NUL in path segment';
+        }
+    }
     return null;
 }
 function parseQuery(str) {
@@ -676,6 +701,17 @@ class ApiSrv {
             r.url = req.url;
             rawQueryString = undefined;
         }
+        const refuse = () => {
+            try {
+                s.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+            } catch (ignored) {
+                s.destroy();
+            }
+            return false;
+        };
+        if (this.rejectDangerousPaths && detectDangerousPath(r.url)) {
+            return refuse();
+        }
         r.originalUrl = r.url;
         {
             const rewritten = rewritePath(r.url);
@@ -684,6 +720,9 @@ class ApiSrv {
                 return false;
             }
             r.url = rewritten;
+            if (this.rejectDangerousPaths && (rewritten !== r.originalUrl) && detectDangerousPath(r.url)) {
+                return refuse();
+            }
         }
         r.bodyParams = undefined;
         r.urlParams = undefined;

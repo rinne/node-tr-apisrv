@@ -74,7 +74,7 @@ request, `tr-apisrv` returns a canonical JSON error such as
 | `authCallback` | function | `() => true` | Runs before any parameters are parsed. Return truthy to continue; falsy lets you reject (e.g. send 401). Parameter fields are `undefined` during this callback. |
 | `upgradeCallback` | function | `undefined` | Optional `upgrade` (e.g. WebSocket) handler invoked after authentication. |
 | `prettyPrintJsonResponses` | boolean | `false` | When true, `jsonResponse` pretty-prints JSON with trailing newline. |
-| `rejectDangerousPaths` | boolean | `true` | Reject paths containing empty, `.` or `..` segments with HTTP 400. |
+| `rejectDangerousPaths` | boolean | `true` | Reject paths containing empty, `.` or `..` segments, also percent-encoded, or segments with an encoded `/`, `\` or NUL, with HTTP 400. |
 | `bodyReadTimeoutMs` | number | `2000` | Milliseconds allowed to fully read the request body. Applies to upgrade as well. |
 | `maxBodySize` | number | `1048576` | Maximum allowed request body size in bytes. `0` allows only empty bodies. |
 | `errorCallback` | function | `undefined` | Called for every error response the server generates itself, so that the application can send its own. See [Custom error responses](#custom-error-responses). |
@@ -390,8 +390,14 @@ async function ping(request) {
 
 When `rejectDangerousPaths` is `true` (the default), the server rejects paths
 containing empty segments (`//`) or dot segments (`/.`, `/..`) before running
-authentication or handlers. Disable the check only when you know that upstream
-routing has already sanitized paths:
+authentication or handlers. Path parameters are percent-decoded, so the check
+looks at the decoded segments too: `%2e%2e` is `..`, and a segment that decodes
+to something containing `/`, `\` or a NUL byte (`..%2f..`, `a%5cb`), a raw
+`\`, or a malformed escape such as `%e0%a4%a` is rejected as well. Other
+encoded characters (`a%20b`, `v1%2e2`) are fine. The check also applies to
+upgrade requests, which get a bare `400 Bad Request` and a closed
+connection, and to the path that `pathRewrite` returns. Disable the check only
+when you know that upstream routing has already sanitized paths:
 
 ```javascript
 const srv = new ApiSrv({
