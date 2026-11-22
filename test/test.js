@@ -243,9 +243,8 @@ test('requestHandlers support path templates', async (t) => {
             urlParams: { foo: 'bar', userId: 'query' },
             bodyParams: {}
         });
-        assert.strictEqual(warnings.length, 1);
-        assert.match(warnings[0], /userId/);
-        assert.match(warnings[0], /query string/);
+        // The override is only logged in debug mode.
+        assert.strictEqual(warnings.length, 0);
     } finally {
         t.mock.restoreAll();
         await srv.shutdown();
@@ -715,8 +714,10 @@ test('path parameters override body parameters with warning', async (t) => {
     const port = 12369;
     const warnings = [];
     const warnMock = t.mock.method(console, 'warn', (...args) => warnings.push(args.join(' ')));
+    t.mock.method(console, 'log', () => {});
     const srv = new ApiSrv({
         port,
+        debug: true,
         requestHandlers: {
             POST: {
                 '/user/{userId}': (r) => r.jsonResponse({
@@ -1910,5 +1911,41 @@ test('a body read timeout gives 408 and closes the connection', async () => {
         assert.ok(closedAfter < 2000, `closed after ${closedAfter} ms`);
     } finally {
         await srv.shutdown();
+    }
+});
+
+test('invalid percent-encoding gives 400 also when rejectDangerousPaths is off', async () => {
+    const port = 12426;
+    const srv = new ApiSrv({
+        port,
+        rejectDangerousPaths: false,
+        requestHandlers: { GET: { '/user/{id}': (r) => r.jsonResponse({ id: r.params.id }) } }
+    });
+    try {
+        let res = await httpRequest(port, { path: '/user/%zz' });
+        assert.strictEqual(res.status, 400);
+        assert.match(JSON.parse(res.data).message, /invalid percent-encoding/);
+        res = await httpRequest(port, { path: '/user/a%20b' });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(JSON.parse(res.data), { id: 'a b' });
+        res = await httpRequest(port, { path: '/other' });
+        assert.strictEqual(res.status, 404);
+    } finally {
+        await srv.shutdown();
+    }
+});
+
+test('a server error goes to an error listener of the application instead of ending the process', async (t) => {
+    const port = 12427;
+    const first = new ApiSrv({ port, address: '127.0.0.1', callback: (r) => r.jsonResponse({}) });
+    t.mock.method(console, 'log', () => {});
+    try {
+        await new Promise((resolve) => first.server.once('listening', resolve));
+        const second = new ApiSrv({ port, address: '127.0.0.1', callback: (r) => r.jsonResponse({}) });
+        const e = await new Promise((resolve) => second.server.on('error', resolve));
+        assert.strictEqual(e.code, 'EADDRINUSE');
+    } finally {
+        t.mock.restoreAll();
+        await first.shutdown();
     }
 });

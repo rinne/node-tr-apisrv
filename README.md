@@ -253,8 +253,8 @@ authentication succeeds and before the handler runs.
 
 All parameter collections are plain objects (or arrays for multi-segment
 captures). Parameters are merged in the following order: body → query string →
-path. Later sources override earlier ones in `request.params`. When this occurs,
-`tr-apisrv` logs a warning naming both sources.
+path. Later sources override earlier ones in `request.params`. When this occurs
+and `debug` is on, `tr-apisrv` logs a warning naming both sources.
 
 ## Body parsing and limits
 
@@ -266,7 +266,8 @@ path. Later sources override earlier ones in `request.params`. When this occurs,
   `maxBodySize: 0` any non-empty body does. The response to a rejected
   body is sent with `Connection: close` and the connection is closed
   after it.
-* Slow clients that exceed `bodyReadTimeoutMs` cause `408 Request Timeout`.
+* Slow clients that exceed `bodyReadTimeoutMs` cause `408 Request Timeout`,
+  also sent with `Connection: close`.
 
 ## Path rewriting
 
@@ -334,8 +335,9 @@ with one object for every error response that `tr-apisrv` generates itself:
 | `request` | The request wrapper. Depending on how far the request got, some of its properties are not set yet. |
 
 Send the response and return a truthy value. Return a falsy value to let the
-server send its default response; it does that too when the callback throws
-or leaves the response unsent.
+server send its default response; it does that too when the callback throws,
+and when it returns a truthy value but hasn't finished the response within
+`bodyReadTimeoutMs` (if it has started one, the connection is closed instead).
 
 ```javascript
 const server = new ApiSrv({
@@ -385,6 +387,19 @@ async function ping(request) {
   return request.jsonResponse({ ok: true });
 }
 ```
+
+## Server object and shutdown
+
+* `server.server` is the underlying `http.Server` (or `https.Server`). It
+  starts listening in the constructor; wait for its `'listening'` event if
+  you need to know when it does.
+* If the server emits `'error'` (typically: it cannot listen on the port),
+  `tr-apisrv` prints a message and ends the process with exit code 1,
+  unless the application has added an `'error'` listener of its own to
+  `server.server`. Then the application decides what to do.
+* `server.close()` stops accepting connections and returns a promise that
+  resolves once the existing connections have closed. `server.shutdown()`
+  is the same.
 
 ## Safety features
 

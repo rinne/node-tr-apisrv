@@ -401,14 +401,14 @@ function matchCompiledPath(compiled, pathInfo) {
     return matchRecursive(0, 0);
 }
 
-function assignParams(target, source, sourceType, sources) {
+function assignParams(target, source, sourceType, sources, debug) {
     if (!source) {
         return;
     }
     for (const [key, value] of Object.entries(source)) {
         if (Object.prototype.hasOwnProperty.call(target, key)) {
             const previous = sources.get(key);
-            if (previous && previous !== sourceType) {
+            if (debug && previous && previous !== sourceType) {
                 const prevLabel = PARAM_SOURCE_LABELS[previous] || previous;
                 const currentLabel = PARAM_SOURCE_LABELS[sourceType] || sourceType;
                 console.warn(`ApiSrv warning: parameter "${key}" from ${currentLabel} overrides value from ${prevLabel}.`);
@@ -962,6 +962,9 @@ class ApiSrv {
                         const hasOtherMethod = this.#hasHandlerForOtherMethod(r.method, r.url);
                         if (hasOtherMethod) {
                             jsonError(res, 405, 'Method Not Allowed', ctx('router'));
+                        } else if (r.url.split('/').some((seg) => (decodePathSegment(seg) === null))) {
+                            // Also when rejectDangerousPaths is off.
+                            error(res, 400, 'invalid percent-encoding in path', undefined, ctx('router'));
                         } else {
                             jsonError(res, 404, 'Not Found', ctx('router'));
                         }
@@ -1070,14 +1073,14 @@ class ApiSrv {
                         effectiveBodyParams = validation.value;
                     }
                     const mergedParams = {};
-                    assignParams(mergedParams, effectiveBodyParams, 'body', paramSources);
+                    assignParams(mergedParams, effectiveBodyParams, 'body', paramSources, this.debug);
                     let safeUrlParams;
                     if (!ignoreUrlParams) {
                         safeUrlParams = (urlParams && (typeof urlParams === 'object')) ? urlParams : Object.create(null);
-                        assignParams(mergedParams, safeUrlParams, 'query', paramSources);
+                        assignParams(mergedParams, safeUrlParams, 'query', paramSources, this.debug);
                         r.urlParams = safeUrlParams;
                     }
-                    assignParams(mergedParams, (normalizedPathParams && (typeof normalizedPathParams === 'object')) ? normalizedPathParams : Object.create(null), 'path', paramSources);
+                    assignParams(mergedParams, (normalizedPathParams && (typeof normalizedPathParams === 'object')) ? normalizedPathParams : Object.create(null), 'path', paramSources, this.debug);
                     if (handlerOptions && handlerOptions.paramsValidator) {
                         const validation = await runValidator(handlerOptions.paramsValidator, mergedParams, 'request parameters');
                         if (!validation.success) {
@@ -1260,14 +1263,21 @@ class ApiSrv {
     if (this.upgradeCallback) {
         this.server.on('upgrade', upgradeCb);
     }
-    this.server.on('error', (e) => {
+    // Without an 'error' listener of the application's own on
+    // this.server, a server error (typically: cannot listen) ends the
+    // process as before. With one, the application decides.
+    const defaultErrorListener = (e) => {
+        if (this.server.listeners('error').some((l) => (l !== defaultErrorListener))) {
+            return;
+        }
         const addr = (this.address !== undefined) ? ` address: ${this.address}` : '';
         console.log(`Unable to start HTTP server (port: ${this.port}${addr})`);
         if (this.debug && e) {
             console.log(e);
         }
         process.exit(1);
-    });
+    };
+    this.server.on('error', defaultErrorListener);
     this.server.headersTimeout = this.bodyReadTimeoutMs;
     this.server.requestTimeout = this.bodyReadTimeoutMs + 1;
     this.server.listen(this.port, this.address);
