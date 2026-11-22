@@ -1,9 +1,16 @@
 {
     "name": "tr-apisrv",
-    "version": "3.2.0",
+    "version": "3.3.0",
     "description": "A simple asynchronous API server class",
     "main": "index.js",
+    "files": [
+        "index.js",
+        "LICENSE",
+        "MIT-RINNE",
+        "CHANGELOG.md"
+    ],
     "scripts": {
+        "prepublishOnly": "npm test",
         "test": "node --test test/test.js"
     },
     "engines": {

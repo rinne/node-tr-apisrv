@@ -1,6 +1,39 @@
 Changelog
 =========
 
+3.3.0
+-----
+
+Tested on Node.js 18, 20, 22, 24 and 26.
+
+### Changed behaviour
+
+- A server `'error'` event no longer ends the process when the
+  application has added an `'error'` listener of its own to
+  `server.server`. Without one it still does.
+- The warning about a parameter overriding one from another source
+  is only logged when `debug` is on. Before, any client could make
+  the server log it for every request.
+- A path with invalid percent-encoding that matches no handler gives
+  400 instead of 404 also when `rejectDangerousPaths` is off.
+
+### Fixed
+
+- An `errorCallback` that returned a truthy value without finishing
+  the response left the request hanging. After `bodyReadTimeoutMs`
+  the default response is now sent, or the connection closed if the
+  callback had started a response.
+- A 408 for a body that wasn't received in time left the connection
+  open until the client gave up. It is now sent with
+  `Connection: close` and the connection is closed after it, like
+  the other rejected bodies.
+
+### Other
+
+- README: `server.server`, `close()`, `shutdown()` and server errors.
+- Only index.js and the licence and changelog files are published.
+- The tests are run before publishing.
+
 3.2.0
 -----
 
